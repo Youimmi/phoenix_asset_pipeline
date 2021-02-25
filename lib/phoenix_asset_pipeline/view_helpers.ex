@@ -44,7 +44,7 @@ defmodule PhoenixAssetPipeline.ViewHelpers do
   """
 
   import Phoenix.HTML.Tag, only: [content_tag: 3, img_tag: 1]
-  alias PhoenixAssetPipeline.Pipelines.{CoffeeScript, Sass}
+  alias PhoenixAssetPipeline.Pipelines.Sass
 
   def image_tag(conn, path) do
     img_tag("#{conn.scheme}://#{conn.host}:4001/img/#{path}")
@@ -55,7 +55,13 @@ defmodule PhoenixAssetPipeline.ViewHelpers do
   end
 
   def script_tag(conn, path, html_opts \\ []) do
-    {_, digest, integrity} = CoffeeScript.new(path)
+    asset_provider =
+      case Application.fetch_env(:phoenix_asset_pipeline, :asset_provider) do
+        {:ok, value} -> value
+        :error -> PhoenixAssetPipeline.AssetProvider
+      end
+
+    {_, digest, integrity} = apply(asset_provider, :coffeescript_new, [path])
 
     opts =
       html_opts

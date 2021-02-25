@@ -15,7 +15,13 @@ defmodule PhoenixAssetPipeline.Plugs.JavaScript do
       when method in @allowed_methods do
     case Regex.named_captures(~r/(?<path>.*)-.{32}\.js$/, Enum.join(segments, "/")) do
       %{"path" => path} ->
-        {js, _digest, _integrity} = PhoenixAssetPipeline.Pipelines.CoffeeScript.new(path)
+        asset_provider =
+          case Application.fetch_env(:phoenix_asset_pipeline, :asset_provider) do
+            {:ok, value} -> value
+            :error -> PhoenixAssetPipeline.AssetProvider
+          end
+
+        {js, _digest, _integrity} = apply(asset_provider, :coffeescript_new, [path])
 
         conn
         |> put_resp_content_type("application/javascript")
