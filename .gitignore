@@ -1,0 +1,35 @@
+# The directory Mix will write compiled artifacts to.
+/_build
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where 3rd-party dependencies like ExDoc output generated docs.
+/doc/
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+*.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.beam
+*.ez
+
+# Ignore package tarball (built via "mix hex.build").
+*.tar
+
+# If NPM crashes, it generates a log, let's ignore it too.
+*.log
+
+# Ignore Dialyze files
+*.plt
+*.plt.hash
+
+# Ignore hidden files
+.*
+!.formatter.exs
+!.github
+!.gitignore
+!.keep
