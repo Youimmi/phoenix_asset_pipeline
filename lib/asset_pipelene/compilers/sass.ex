@@ -1,28 +1,19 @@
 defmodule AssetPipeline.Compilers.Sass do
+  @moduledoc false
+
+  alias AssetPipeline.Exceptions.SassCompilerError
+
   def new(path) do
     compile(path)
   end
 
   defp compile(path) do
-    config = DartSass.config_for!(:default)
-    args = config[:args] || ["--load-path=assets/css", "--indented", "--style=compressed"]
+    opts = ~w(--embed-source-map --color --indented --style=compressed)
+    %{cmd: cmd, args: args} = DartSass.detect_platform()
 
-    opts = [
-      cd: config[:cd] || File.cwd!(),
-      env: config[:env] || %{},
-      stderr_to_stdout: true
-    ]
-
-    {path, args} = sass(args ++ ["assets/css/#{path}.sass"])
-    {result, 0} = System.cmd(Path.expand(path), args, opts)
-
-    result
-  end
-
-  defp sass(args) do
-    case DartSass.bin_paths() do
-      {sass, nil} -> {sass, args}
-      {vm, snapshot} -> {vm, [snapshot] ++ args}
+    case System.cmd(cmd, args ++ opts ++ ["assets/css/#{path}.sass"], stderr_to_stdout: true) do
+      {css, 0} -> css
+      {error, _} -> raise SassCompilerError, error
     end
   end
 end

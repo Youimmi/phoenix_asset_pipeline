@@ -41,15 +41,16 @@ defmodule AssetPipeline.MixProject do
   defp deps do
     [
       {:credo, "~> 1.6.0-rc.1", only: [:dev, :test], runtime: false},
-      {:dart_sass, "~> 0.3", runtime: Mix.env() == :dev},
+      {:dart_sass, github: "CargoSense/dart_sass", runtime: Mix.env() == :dev},
       {:dialyxir, "~> 1.1", only: :dev, runtime: false},
-      {:esbuild, "~> 0.3", runtime: Mix.env() == :dev},
+      {:esbuild, github: "phoenixframework/esbuild", runtime: Mix.env() == :dev},
       {:ex_doc, "~> 0.25", only: :dev, runtime: false},
       {:jason, "~> 1.2"},
       {:phoenix, "~> 1.6.2"},
       {:phoenix_html, "~> 3.1"},
       {:phoenix_live_view, "~> 0.17", optional: true},
-      {:plug_cowboy, "~> 2.5"}
+      {:plug_cowboy, "~> 2.5"},
+      {:rambo, "~> 0.3"}
     ]
   end
 
