@@ -49,8 +49,7 @@ defmodule AssetPipeline.MixProject do
       {:phoenix, "~> 1.6.2"},
       {:phoenix_html, "~> 3.1"},
       {:phoenix_live_view, "~> 0.17", optional: true},
-      {:plug_cowboy, "~> 2.5"},
-      {:rambo, "~> 0.3"}
+      {:plug_cowboy, "~> 2.5"}
     ]
   end
 
