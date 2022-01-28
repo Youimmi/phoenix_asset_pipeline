@@ -1,4 +1,4 @@
-# AssetPipeline
+# PhoenixAssetPipeline
 Asset pipeline for Phoenix app
 
 **TODO: Add description**
@@ -6,12 +6,12 @@ Asset pipeline for Phoenix app
 ## Installation
 
 If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `asset_pipeline` to your list of dependencies in `mix.exs`:
+by adding `phoenix_asset_pipeline` to your list of dependencies in `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:asset_pipeline, "~> 0.1.0"}
+    {:phoenix_asset_pipeline, "~> 0.1.0"}
   ]
 end
 ```
