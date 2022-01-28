@@ -2,12 +2,19 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
   @moduledoc false
 
   import PhoenixAssetPipeline.{Obfuscator, Utils}
-  alias PhoenixAssetPipeline.Exceptions.SassCompilerError
+  alias PhoenixAssetPipeline.{Compiler, Exceptions.SassCompilerError}
 
+  @behaviour Compiler
+
+  @impl true
   def new(path) do
-    compile(path)
+    case compile(path) do
+      {:ok, css} -> css
+      {:error, msg} -> raise SassCompilerError, msg
+    end
   end
 
+  @impl true
   def compile(path) do
     install_sass()
 
@@ -17,12 +24,15 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
 
     case cmd(bin, args ++ opts ++ [assets_path() <> "/#{path}.sass"]) do
       {css, 0} ->
-        Regex.replace(~r{\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}, css, fn _, class_name, _ ->
-          "." <> obfuscate(class_name)
-        end)
+        css =
+          Regex.replace(~r{\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}, css, fn _, class_name, _ ->
+            "." <> obfuscate(class_name)
+          end)
+
+        {:ok, css}
 
       {error, _} ->
-        raise SassCompilerError, error
+        {:error, error}
     end
   end
 end
