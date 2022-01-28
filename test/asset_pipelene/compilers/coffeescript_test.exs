@@ -1,4 +1,4 @@
-defmodule AssetPipeline.Compilers.CoffeeScriptTest do
+defmodule PhoenixAssetPipeline.Compilers.CoffeeScriptTest do
   use ExUnit.Case, async: true
-  doctest AssetPipeline
+  doctest PhoenixAssetPipeline
 end

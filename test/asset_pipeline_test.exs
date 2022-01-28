@@ -1,11 +1,11 @@
-defmodule AssetPipelineTest do
+defmodule PhoenixAssetPipelineTest do
   use ExUnit.Case, async: true
-  doctest AssetPipeline
+  doctest PhoenixAssetPipeline
 
   # @version Esbuild.latest_version()
 
   # test "greets the world" do
-  #   assert AssetPipeline.hello() == :world
+  #   assert PhoenixAssetPipeline.hello() == :world
   # end
 
   # test "run on default" do

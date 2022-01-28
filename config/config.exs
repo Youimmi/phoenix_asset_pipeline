@@ -8,5 +8,4 @@
 import Config
 
 config :phoenix, :json_library, Jason
-
-config :rambo, purge: true
+config :phoenix_asset_pipeline, :assets_path, "priv/css"

@@ -1,4 +1,4 @@
-defmodule AssetPipeline.Storage do
+defmodule PhoenixAssetPipeline.Storage do
   @moduledoc """
   This module implements the `AssetPipeline.Storage` and stores the data with
   [:persistent_term](https://erlang.org/doc/man/persistent_term.html).

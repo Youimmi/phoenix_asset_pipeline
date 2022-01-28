@@ -1,4 +1,4 @@
-defmodule AssetPipeline.Compilers.EsbuildTest do
+defmodule PhoenixAssetPipeline.Compilers.EsbuildTest do
   use ExUnit.Case, async: true
-  doctest AssetPipeline
+  doctest PhoenixAssetPipeline
 end

@@ -1,4 +1,4 @@
-defmodule AssetPipeline.Compilers.SassTest do
+defmodule PhoenixAssetPipeline.Compilers.SassTest do
   use ExUnit.Case, async: true
-  doctest AssetPipeline
+  doctest PhoenixAssetPipeline
 end

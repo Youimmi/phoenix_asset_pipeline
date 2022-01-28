@@ -1,4 +1,4 @@
-defmodule AssetPipeline.Exceptions.SassCompilerError do
+defmodule PhoenixAssetPipeline.Exceptions.SassCompilerError do
   @moduledoc false
 
   require Logger
