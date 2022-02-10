@@ -48,7 +48,7 @@ defmodule PhoenixAssetPipeline.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:credo, ">= 0.0.0", github: "rrrene/credo", only: [:dev, :test], runtime: false},
+      {:credo, github: "rrrene/credo", only: [:dev, :test], runtime: false},
       {:dart_sass, github: "CargoSense/dart_sass", runtime: Mix.env() == :dev},
       {:dialyxir, "~> 1.1", only: :dev, runtime: false},
       {:esbuild, github: "phoenixframework/esbuild", runtime: Mix.env() == :dev, override: true},

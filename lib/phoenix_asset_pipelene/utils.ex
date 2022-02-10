@@ -10,17 +10,13 @@ defmodule PhoenixAssetPipeline.Utils do
   end
 
   def install_sass do
-    path = DartSass.bin_path()
-
-    unless path_exists?(path) do
+    unless path_exists?(DartSass.bin_path()) do
       DartSass.install()
     end
   end
 
   def install_esbuild do
-    path = Esbuild.bin_path()
-
-    unless File.exists?(path) do
+    unless File.exists?(Esbuild.bin_path()) do
       Esbuild.install()
     end
   end

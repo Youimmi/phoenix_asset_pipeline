@@ -40,32 +40,34 @@ defmodule PhoenixAssetPipeline.Helpers do
   # def script_tag(_assets_url, _path, _opts) do
   # end
 
+  defmacro class(name) when is_binary(name) do
+    classes =
+      name
+      |> String.split(" ", trim: true)
+      |> Enum.reduce("", fn class_name, classes ->
+        classes <> " " <> obfuscate(class_name)
+      end)
+      |> String.trim()
+
+    [class: classes]
+  end
+
+  defmacro class(_), do: []
+
+  defmacro style_tag(path, html_opts \\ []) do
+    content_tag(:style, {:safe, Sass.new(path)}, html_opts)
+  end
+
   defmacro __using__(_opts) do
     quote do
+      import PhoenixAssetPipeline.Helpers
+
       unless Application.get_env(:phoenix_asset_pipeline, :release, false) do
         Module.register_attribute(__MODULE__, :external_resource, accomulate: true)
 
-        for file <- Path.wildcard(Utils.assets_path() <> "/**/*.{sass, scss}") do
+        for file <- Path.wildcard("../Mia/" <> Utils.assets_path() <> "/**/*.{sass, scss}") do
           Module.put_attribute(__MODULE__, :external_resource, file)
         end
-      end
-
-      defmacro class(name) when is_binary(name) do
-        classes =
-          name
-          |> String.split(" ", trim: true)
-          |> Enum.reduce("", fn class_name, classes ->
-            classes <> " " <> obfuscate(class_name)
-          end)
-          |> String.trim()
-
-        [class: classes]
-      end
-
-      defmacro class(_), do: []
-
-      defmacro style_tag(path, html_opts \\ []) do
-        content_tag(:style, {:safe, Sass.new(path)}, html_opts)
       end
     end
   end
