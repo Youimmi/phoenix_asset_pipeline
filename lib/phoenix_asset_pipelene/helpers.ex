@@ -2,8 +2,7 @@ defmodule PhoenixAssetPipeline.Helpers do
   @moduledoc false
 
   import Phoenix.HTML.Tag
-  import PhoenixAssetPipeline.Obfuscator
-  alias PhoenixAssetPipeline.{Compilers.Sass, Utils}
+  alias PhoenixAssetPipeline.{Compilers.Sass, Obfuscator, Utils}
   # alias Plug.Conn
 
   # @assets_url Application.compile_env(:phoenix_asset_pipeline, :assets_url)
@@ -45,7 +44,7 @@ defmodule PhoenixAssetPipeline.Helpers do
       name
       |> String.split(" ", trim: true)
       |> Enum.reduce("", fn class_name, classes ->
-        classes <> " " <> obfuscate(class_name)
+        classes <> " " <> Obfuscator.obfuscate(class_name)
       end)
       |> String.trim()
 
@@ -62,11 +61,12 @@ defmodule PhoenixAssetPipeline.Helpers do
     quote do
       import PhoenixAssetPipeline.Helpers
 
-      unless Application.get_env(:phoenix_asset_pipeline, :release, false) do
-        Module.register_attribute(__MODULE__, :external_resource, accomulate: true)
-
-        for file <- Path.wildcard("../Mia/" <> Utils.assets_path() <> "/**/*.{sass, scss}") do
-          Module.put_attribute(__MODULE__, :external_resource, file)
+      if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
+        for path <-
+              [File.cwd!(), Utils.assets_path(), "**/*.{sass, scss}"]
+              |> Path.join()
+              |> Path.wildcard() do
+          @external_resource path
         end
       end
     end

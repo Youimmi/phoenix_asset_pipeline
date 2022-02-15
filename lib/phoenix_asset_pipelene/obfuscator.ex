@@ -30,8 +30,7 @@ defmodule PhoenixAssetPipeline.Obfuscator do
   defp file_path do
     file_name =
       Module.split(__MODULE__)
-      |> Enum.map(&Macro.underscore(&1))
-      |> Enum.join(".")
+      |> Enum.map_join(".", &Macro.underscore(&1))
 
     if Code.ensure_loaded?(Mix.Project),
       do: Path.join(Path.dirname(Mix.Project.build_path()), file_name),

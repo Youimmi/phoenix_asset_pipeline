@@ -1,8 +1,7 @@
 defmodule PhoenixAssetPipeline.Compilers.Esbuild do
   @moduledoc false
 
-  import PhoenixAssetPipeline.Utils
-  alias PhoenixAssetPipeline.Compiler
+  alias PhoenixAssetPipeline.{Compiler, Utils}
 
   @behaviour Compiler
 
@@ -11,7 +10,7 @@ defmodule PhoenixAssetPipeline.Compilers.Esbuild do
 
   @impl true
   def compile!(_) do
-    install_esbuild()
+    Utils.install_esbuild()
     ""
   end
 end

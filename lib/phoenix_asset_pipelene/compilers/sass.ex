@@ -1,8 +1,9 @@
 defmodule PhoenixAssetPipeline.Compilers.Sass do
   @moduledoc false
 
-  import PhoenixAssetPipeline.{Obfuscator, Utils}
-  alias PhoenixAssetPipeline.{Compiler, Exceptions.SassCompilerError}
+  require Logger
+
+  alias PhoenixAssetPipeline.{Compiler, Exceptions.SassCompilerError, Obfuscator, Utils}
 
   @behaviour Compiler
 
@@ -13,20 +14,28 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
 
   @impl true
   def compile!(path) do
-    install_sass()
+    Utils.install_sass()
 
     args = []
-    opts = ~w(--embed-source-map --color --indented --style=compressed)
     bin = DartSass.bin_path()
+    opts = ~w(--embed-source-map --color --indented --style=compressed)
 
-    case cmd(bin, args ++ opts ++ [assets_path() <> "/#{path}.sass"]) do
+    case Utils.cmd(bin, args ++ opts ++ [Path.join(Utils.assets_path(), "#{path}.sass")]) do
       {css, 0} ->
-        Regex.replace(~r{\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}, css, fn _, class_name, _ ->
-          "." <> obfuscate(class_name)
+        # Matches a valid CSS class name. Read more https://rgxdb.com/r/3SSUL9QL
+        regex = ~r{\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}
+
+        Regex.replace(regex, css, fn _, class_name, _ ->
+          "." <> Obfuscator.obfuscate(class_name)
         end)
 
       {msg, _} ->
-        raise SassCompilerError, msg
+        if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
+          Logger.error(msg)
+          ""
+        else
+          raise SassCompilerError, msg
+        end
     end
   end
 end

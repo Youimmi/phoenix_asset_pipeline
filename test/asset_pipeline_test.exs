@@ -1,5 +1,6 @@
 defmodule PhoenixAssetPipelineTest do
   use ExUnit.Case, async: true
+
   doctest PhoenixAssetPipeline
 
   # @version Esbuild.latest_version()

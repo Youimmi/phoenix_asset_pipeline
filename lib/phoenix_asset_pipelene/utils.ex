@@ -3,6 +3,10 @@ defmodule PhoenixAssetPipeline.Utils do
 
   @assets_path Application.compile_env(:phoenix_asset_pipeline, :assets_path, "assets/css")
 
+  def application_started? do
+    List.keymember?(Application.started_applications(), :phoenix_asset_pipeline, 0)
+  end
+
   def assets_path, do: @assets_path
 
   def cmd(path, args) do

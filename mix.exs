@@ -17,6 +17,9 @@ defmodule PhoenixAssetPipeline.MixProject do
       package: package(),
       deps: deps(),
       aliases: aliases(),
+      dialyzer: [
+        plt_add_apps: [:mix]
+      ],
       source_url: "https://github.com/Youimmi/phoenix_asset_pipeline"
     ]
   end
@@ -50,7 +53,7 @@ defmodule PhoenixAssetPipeline.MixProject do
     [
       {:credo, github: "rrrene/credo", only: [:dev, :test], runtime: false},
       {:dart_sass, github: "CargoSense/dart_sass", runtime: Mix.env() == :dev},
-      {:dialyxir, "~> 1.1", only: :dev, runtime: false},
+      {:dialyxir, "~> 1.1", only: [:dev, :test], runtime: false},
       {:esbuild, github: "phoenixframework/esbuild", runtime: Mix.env() == :dev, override: true},
       {:ex_doc, "~> 0.28", only: :dev, runtime: false},
       {:jason, "~> 1.3"},
