@@ -11,7 +11,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       app: :phoenix_asset_pipeline,
       version: @version,
       compilers: Mix.compilers(),
-      elixir: "~> 1.13",
+      elixir: "~> 1.10",
       start_permanent: Mix.env() == :prod,
       description: @description,
       package: package(),
