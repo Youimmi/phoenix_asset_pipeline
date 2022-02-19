@@ -20,19 +20,14 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
 
     args = []
     bin = DartSass.bin_path()
-    opts = ~w(--embed-source-map --color --indented --style=compressed)
+    opts = ~w(--embed-source-map --color --indented --stop-on-error --style=compressed)
 
     case Utils.cmd(bin, args ++ opts ++ [Path.join(Utils.assets_path(), "#{path}.sass")]) do
       {css, 0} ->
-        css = minify(obfuscate_class_names?(), css)
-
-        integrity =
-          sri_hash_algoritm()
-          |> String.to_atom()
-          |> :crypto.hash(css)
-          |> Base.encode64()
-
-        {css, integrity}
+        {
+          content(css, obfuscate_class_names?()),
+          integrity(css)
+        }
 
       {msg, _} ->
         if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
@@ -44,12 +39,13 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
     end
   end
 
-  defp minify(true, css) do
-    # Matches a valid CSS class name. Read more https://rgxdb.com/r/3SSUL9QL
-    Regex.replace(~r{\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}, css, fn _, class_name, _ ->
-      "." <> Obfuscator.obfuscate(class_name)
-    end)
-  end
+  defp content(css, true), do: Obfuscator.obfuscate_css(css)
+  defp content(css, _), do: css
 
-  defp minify(_, css), do: css
+  defp integrity(css) do
+    sri_hash_algoritm()
+    |> String.to_atom()
+    |> :crypto.hash(css)
+    |> Base.encode64()
+  end
 end

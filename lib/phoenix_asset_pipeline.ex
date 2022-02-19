@@ -31,7 +31,7 @@ defmodule PhoenixAssetPipeline do
 
   # Store the routes in persistent_term. This may give a performance improvement
   # when there are a large number of routes
-  # See https://ninenines.eu/docs/en/cowboy/2.7/guide/routing
+  # See https://ninenines.eu/docs/en/cowboy/2.9/guide/routing
   # defp upgrade_dispatch do
   #   :persistent_term.put(
   #     :phoenix_asset_pipeline_dispatch,

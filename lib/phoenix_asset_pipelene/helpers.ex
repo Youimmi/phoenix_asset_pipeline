@@ -16,7 +16,7 @@ defmodule PhoenixAssetPipeline.Helpers do
 
       if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
         for path <-
-              [File.cwd!(), Utils.assets_path(), "**/*.{sass, scss}"]
+              [File.cwd!(), Utils.assets_path(), "**/*.{sass,scss}"]
               |> Path.join()
               |> Path.wildcard() do
           @external_resource path
@@ -87,7 +87,7 @@ defmodule PhoenixAssetPipeline.Helpers do
       :erlang.md5(path)
       |> Base.encode16(case: :lower)
 
-    name = Keyword.get(html_opts, :name, path)
+    {name, html_opts} = Keyword.pop(html_opts, :name, path)
 
     dets_file = Utils.dets_file(__MODULE__) |> String.to_charlist()
     {:ok, table} = :dets.open_file(dets_file, type: :set)
