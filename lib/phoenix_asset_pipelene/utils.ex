@@ -13,6 +13,16 @@ defmodule PhoenixAssetPipeline.Utils do
     cmd(path, args, stderr_to_stdout: true)
   end
 
+  def dets_file(module) when is_atom(module) do
+    file_name =
+      Module.split(module)
+      |> Enum.map_join(".", &Macro.underscore(&1))
+
+    if Code.ensure_loaded?(Mix.Project),
+      do: Path.join(Path.dirname(Mix.Project.build_path()), file_name),
+      else: Path.expand("_build/" <> file_name)
+  end
+
   def install_sass do
     unless path_exists?(DartSass.bin_path()) do
       DartSass.install()
@@ -29,7 +39,7 @@ defmodule PhoenixAssetPipeline.Utils do
     System.cmd(command, args ++ extra_args, opts)
   end
 
-  defp path_exists?(path) do
+  defp path_exists?(path) when is_list(path) do
     Enum.all?(path, &File.exists?/1)
   end
 end

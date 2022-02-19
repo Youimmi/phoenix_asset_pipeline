@@ -4,8 +4,12 @@ defmodule PhoenixAssetPipeline.Compilers.CoffeeScript do
   @behaviour PhoenixAssetPipeline.Compiler
 
   @impl true
-  def new(_), do: ""
+  def new(path) do
+    compile!(path)
+  end
 
   @impl true
-  def compile!(_), do: ""
+  def compile!(_) do
+    {"", ""}
+  end
 end

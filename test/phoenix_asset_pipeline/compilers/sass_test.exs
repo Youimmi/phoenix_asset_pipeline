@@ -9,7 +9,7 @@ defmodule PhoenixAssetPipeline.Compilers.SassTest do
   if @application_started? do
     describe "runtime" do
       test "compile! returns css" do
-        assert "body{background:red}" <> _source_map = Sass.compile!("app")
+        assert {"body{background:red}" <> _source_map, _integrity} = Sass.compile!("app")
       end
 
       test "compile! returns empty string with error message in STDOUT" do
@@ -26,7 +26,7 @@ defmodule PhoenixAssetPipeline.Compilers.SassTest do
   else
     describe "compile-time" do
       test "compile! returns css" do
-        assert "body{background:red}" <> _source_map = Sass.compile!("app")
+        assert {"body{background:red}" <> _source_map, _integrity} = Sass.compile!("app")
       end
 
       test "compile! raise SassCompilerError" do

@@ -8,18 +8,27 @@ defmodule PhoenixAssetPipeline.HelpersTest do
   if @application_started? do
     describe "runtime" do
       test "style_tag/1 returns style tag with css" do
-        assert {:safe,
-                [
-                  60,
-                  "style",
-                  [],
-                  62,
-                  "body{background:red}" <> _source_map,
-                  60,
-                  47,
-                  "style",
-                  62
-                ]} = style_tag("app")
+        assert {
+                 :safe,
+                 [
+                   60,
+                   "style",
+                   [
+                     32,
+                     "integrity",
+                     61,
+                     34,
+                     "sha256-" <> _integrity,
+                     34
+                   ],
+                   62,
+                   "body{background:red}" <> _source_map,
+                   60,
+                   47,
+                   "style",
+                   62
+                 ]
+               } = style_tag("app")
       end
 
       test "style_tag/1 returns empty style tag" do
@@ -33,18 +42,27 @@ defmodule PhoenixAssetPipeline.HelpersTest do
   else
     describe "compile-time" do
       test "style_tag/1 returns style tag with css" do
-        assert {:safe,
-                [
-                  60,
-                  "style",
-                  [],
-                  62,
-                  "body{background:red}" <> _source_map,
-                  60,
-                  47,
-                  "style",
-                  62
-                ]} = style_tag("app")
+        assert {
+                 :safe,
+                 [
+                   60,
+                   "style",
+                   [
+                     32,
+                     "integrity",
+                     61,
+                     34,
+                     "sha256-" <> _integrity,
+                     34
+                   ],
+                   62,
+                   "body{background:red}" <> _source_map,
+                   60,
+                   47,
+                   "style",
+                   62
+                 ]
+               } = style_tag("app")
       end
 
       test "style_tag/1 raise SassCompilerError" do

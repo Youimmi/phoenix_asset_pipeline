@@ -2,21 +2,70 @@ defmodule PhoenixAssetPipeline.Helpers do
   @moduledoc false
 
   import Phoenix.HTML.Tag
-  alias PhoenixAssetPipeline.{Compilers.Sass, Obfuscator, Utils}
+  import PhoenixAssetPipeline.Config
+  alias PhoenixAssetPipeline.Compilers.{Esbuild, Sass}
+  alias PhoenixAssetPipeline.{Obfuscator, Utils}
   # alias Plug.Conn
 
   # @assets_url Application.compile_env(:phoenix_asset_pipeline, :assets_url)
   # @port Application.compile_env(:asset_pipeline, :port, 4001)
 
-  # if Code.ensure_compiled(Phoenix.LiveView) do
-  #   def assign_assets_url(socket, %{"assets_url" => assets_url}) do
-  #     Phoenix.LiveView.assign_new(socket, :assets_url, fn -> assets_url end)
-  #   end
+  defmacro __using__(_opts) do
+    quote do
+      import PhoenixAssetPipeline.Helpers
 
-  #   def assign_assets_url(socket, _session), do: socket
-  # end
+      if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
+        for path <-
+              [File.cwd!(), Utils.assets_path(), "**/*.{sass, scss}"]
+              |> Path.join()
+              |> Path.wildcard() do
+          @external_resource path
+        end
+      else
+        def __mix_recompile__?, do: true
+      end
+    end
+  end
 
-  # def base_url(conn) do
+  defmacro class(name) when is_binary(name) do
+    classes = String.split(name, " ", trim: true)
+
+    classes =
+      case obfuscate_class_names?() do
+        true ->
+          Enum.reduce(classes, "", fn class_name, classes ->
+            classes <> " " <> Obfuscator.obfuscate(class_name)
+          end)
+
+        _ ->
+          Enum.join(classes, " ")
+      end
+      |> String.trim()
+
+    [class: classes]
+  end
+
+  defmacro class(_), do: []
+
+  defmacro style_tag(_ \\ "", _ \\ [])
+  defmacro style_tag("", _), do: nil
+
+  defmacro style_tag(path, html_opts) when is_binary(path) and is_list(html_opts) do
+    {css, integrity} = Sass.new(path)
+    html_opts = put_integrity(html_opts, integrity)
+
+    content_tag(:style, {:safe, css}, html_opts)
+  end
+
+  if Code.ensure_compiled(Phoenix.LiveView) do
+    def assign_assets_url(socket, %{"assets_url" => assets_url}) do
+      Phoenix.LiveView.assign_new(socket, :assets_url, fn -> assets_url end)
+    end
+
+    def assign_assets_url(socket, _session), do: socket
+  end
+
+  # defp base_url(conn) do
   #   @assets_url || "#{conn.scheme}://#{conn.host}:#{@port}"
   # end
 
@@ -30,45 +79,40 @@ defmodule PhoenixAssetPipeline.Helpers do
   #   img_tag("#{assets_url}/img/#{path}", opts)
   # end
 
-  # def script_tag(_, _, _ \\ [])
+  defmacro script_tag(assets_url, path, html_opts \\ [])
+           when is_binary(path) and is_list(html_opts) do
+    {js, integrity} = Esbuild.new(path)
 
-  # def script_tag(%Conn{} = conn, path, opts) do
-  #   script_tag(base_url(conn), path, opts)
-  # end
+    digest =
+      :erlang.md5(path)
+      |> Base.encode16(case: :lower)
 
-  # def script_tag(_assets_url, _path, _opts) do
-  # end
+    name = Keyword.get(html_opts, :name, path)
 
-  defmacro class(name) when is_binary(name) do
-    classes =
-      name
-      |> String.split(" ", trim: true)
-      |> Enum.reduce("", fn class_name, classes ->
-        classes <> " " <> Obfuscator.obfuscate(class_name)
-      end)
-      |> String.trim()
+    dets_file = Utils.dets_file(__MODULE__) |> String.to_charlist()
+    {:ok, table} = :dets.open_file(dets_file, type: :set)
+    :dets.insert_new(table, {path, digest, name})
+    :dets.close(dets_file)
 
-    [class: classes]
+    html_opts =
+      html_opts
+      |> put_integrity(integrity)
+      |> Keyword.put_new(:src, src(assets_url, name, digest))
+
+    content_tag(:script, {:safe, js}, html_opts)
   end
 
-  defmacro class(_), do: []
+  defp put_integrity(opts, ""), do: opts
 
-  defmacro style_tag(path, html_opts \\ []) do
-    content_tag(:style, {:safe, Sass.new(path)}, html_opts)
+  defp put_integrity(opts, hash) when is_list(opts) and is_binary(hash) do
+    Keyword.put_new(opts, :integrity, sri_hash_algoritm() <> "-" <> hash)
   end
 
-  defmacro __using__(_opts) do
-    quote do
-      import PhoenixAssetPipeline.Helpers
+  defp src(assets_url, name, digest) when is_binary(assets_url) do
+    assets_url <> "/js/" <> name <> "-" <> digest <> ".js"
+  end
 
-      if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
-        for path <-
-              [File.cwd!(), Utils.assets_path(), "**/*.{sass, scss}"]
-              |> Path.join()
-              |> Path.wildcard() do
-          @external_resource path
-        end
-      end
-    end
+  defp src(_, name, digest) do
+    "/js/" <> name <> "-" <> digest <> ".js"
   end
 end
