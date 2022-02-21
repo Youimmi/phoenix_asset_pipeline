@@ -51,6 +51,7 @@ defmodule PhoenixAssetPipeline.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:brotli, "~> 0.3.0"},
       {:credo, github: "rrrene/credo", only: [:dev, :test], runtime: false},
       {:dart_sass, github: "CargoSense/dart_sass", runtime: Mix.env() == :dev},
       {:dialyxir, "~> 1.1", only: [:dev, :test], runtime: false},

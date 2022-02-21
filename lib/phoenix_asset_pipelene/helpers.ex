@@ -5,10 +5,9 @@ defmodule PhoenixAssetPipeline.Helpers do
   import PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.Compilers.{Esbuild, Sass}
   alias PhoenixAssetPipeline.{Obfuscator, Utils}
-  # alias Plug.Conn
+  alias Plug.Conn
 
-  # @assets_url Application.compile_env(:phoenix_asset_pipeline, :assets_url)
-  # @port Application.compile_env(:asset_pipeline, :port, 4001)
+  @port Application.compile_env(:asset_pipeline, :port, 4001)
 
   defmacro __using__(_opts) do
     quote do
@@ -65,9 +64,11 @@ defmodule PhoenixAssetPipeline.Helpers do
     def assign_assets_url(socket, _session), do: socket
   end
 
-  # defp base_url(conn) do
-  #   @assets_url || "#{conn.scheme}://#{conn.host}:#{@port}"
-  # end
+  def base_url(hostname) when is_binary(hostname), do: normalize_url(hostname)
+
+  def base_url(hostname) do
+    Application.get_env(:phoenix_asset_pipeline, :assets_url) || hostname
+  end
 
   # def image_tag(_, _, _ \\ [])
 
@@ -79,40 +80,58 @@ defmodule PhoenixAssetPipeline.Helpers do
   #   img_tag("#{assets_url}/img/#{path}", opts)
   # end
 
-  defmacro script_tag(assets_url, path, html_opts \\ [])
-           when is_binary(path) and is_list(html_opts) do
+  defmacro script_tag(_, _, _ \\ [])
+
+  defmacro script_tag(hostname, path, html_opts) when is_binary(path) and is_list(html_opts) do
+    {name, html_opts} = Keyword.pop(html_opts, :name, path)
     {js, integrity} = Esbuild.new(path)
+    html_opts = put_integrity(html_opts, integrity)
 
     digest =
       :erlang.md5(path)
       |> Base.encode16(case: :lower)
-
-    {name, html_opts} = Keyword.pop(html_opts, :name, path)
 
     dets_file = Utils.dets_file(__MODULE__) |> String.to_charlist()
     {:ok, table} = :dets.open_file(dets_file, type: :set)
     :dets.insert_new(table, {path, digest, name})
     :dets.close(dets_file)
 
-    html_opts =
-      html_opts
-      |> put_integrity(integrity)
-      |> Keyword.put_new(:src, src(assets_url, name, digest))
-
-    content_tag(:script, {:safe, js}, html_opts)
+    quote bind_quoted: [
+            digest: digest,
+            hostname: hostname,
+            html_opts: html_opts,
+            js: js,
+            name: name
+          ] do
+      content_tag(:script, {:safe, js}, put_src(html_opts, base_url(hostname), name, digest))
+    end
   end
+
+  def normalize_url(hostname) do
+    Regex.replace(~r/(\/)*$/, hostname, "") <> "/"
+  end
+
+  def put_src(html_opts, assets_url, name, digest)
+      when is_binary(assets_url) and
+             is_binary(name) and
+             is_binary(digest) do
+    src =
+      assets_url
+      |> URI.merge(name <> "-" <> digest <> ".js")
+      |> URI.to_string()
+
+    Keyword.put_new(html_opts, :src, src)
+  end
+
+  def put_src(html_opts, %Conn{} = conn, name, digest) do
+    put_src(html_opts, "#{conn.scheme}://#{conn.host}:#{@port}/js/", name, digest)
+  end
+
+  def put_src(html_opts, _, _, _), do: html_opts
 
   defp put_integrity(opts, ""), do: opts
 
   defp put_integrity(opts, hash) when is_list(opts) and is_binary(hash) do
     Keyword.put_new(opts, :integrity, sri_hash_algoritm() <> "-" <> hash)
-  end
-
-  defp src(assets_url, name, digest) when is_binary(assets_url) do
-    assets_url <> "/js/" <> name <> "-" <> digest <> ".js"
-  end
-
-  defp src(_, name, digest) do
-    "/js/" <> name <> "-" <> digest <> ".js"
   end
 end
