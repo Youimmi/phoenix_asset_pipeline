@@ -32,7 +32,7 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
       {msg, _} ->
         if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
           Logger.error(msg)
-          {"", ""}
+          {"", nil}
         else
           raise(SassCompilerError, msg)
         end
