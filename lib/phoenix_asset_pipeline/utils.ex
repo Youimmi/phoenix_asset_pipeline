@@ -1,13 +1,9 @@
 defmodule PhoenixAssetPipeline.Utils do
   @moduledoc false
 
-  @assets_path Application.compile_env(:phoenix_asset_pipeline, :assets_path, "assets/css")
-
   def application_started? do
     List.keymember?(Application.started_applications(), :phoenix_asset_pipeline, 0)
   end
-
-  def assets_path, do: @assets_path
 
   def cmd(path, args) do
     cmd(path, args, stderr_to_stdout: true)
@@ -23,6 +19,11 @@ defmodule PhoenixAssetPipeline.Utils do
       else: Path.expand("_build/" <> file_name)
   end
 
+  def digest(content) do
+    :erlang.md5(content)
+    |> Base.encode16(case: :lower)
+  end
+
   def install_sass do
     unless path_exists?(DartSass.bin_path()) do
       DartSass.install()
@@ -33,6 +34,15 @@ defmodule PhoenixAssetPipeline.Utils do
     unless File.exists?(Esbuild.bin_path()) do
       Esbuild.install()
     end
+  end
+
+  def integrity(content) do
+    :crypto.hash(:sha512, content)
+    |> Base.encode64()
+  end
+
+  def normalize(path) do
+    Regex.replace(~r/(\/)*$/, path, "")
   end
 
   defp cmd([command | args], extra_args, opts) do

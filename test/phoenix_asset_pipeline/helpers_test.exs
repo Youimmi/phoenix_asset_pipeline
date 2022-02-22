@@ -18,7 +18,7 @@ defmodule PhoenixAssetPipeline.HelpersTest do
                      "integrity",
                      61,
                      34,
-                     "sha256-" <> _integrity,
+                     "sha512-" <> _integrity,
                      34
                    ],
                    62,
@@ -52,7 +52,7 @@ defmodule PhoenixAssetPipeline.HelpersTest do
                      "integrity",
                      61,
                      34,
-                     "sha256-" <> _integrity,
+                     "sha512-" <> _integrity,
                      34
                    ],
                    62,

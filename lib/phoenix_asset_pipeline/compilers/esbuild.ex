@@ -1,8 +1,6 @@
 defmodule PhoenixAssetPipeline.Compilers.Esbuild do
   @moduledoc false
 
-  import PhoenixAssetPipeline.Config
-
   alias PhoenixAssetPipeline.{Compiler, Utils}
 
   @behaviour Compiler
@@ -23,11 +21,7 @@ defmodule PhoenixAssetPipeline.Compilers.Esbuild do
         _ -> ""
       end
 
-    integrity =
-      sri_hash_algoritm()
-      |> String.to_atom()
-      |> :crypto.hash(js)
-      |> Base.encode64()
+    integrity = Utils.integrity(js)
 
     {js, integrity}
   end

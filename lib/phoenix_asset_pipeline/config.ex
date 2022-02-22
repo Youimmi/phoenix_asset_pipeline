@@ -1,46 +1,38 @@
 defmodule PhoenixAssetPipeline.Config do
   @moduledoc false
 
-  @app :phoenix_asset_pipeline
+  import PhoenixAssetPipeline.Utils, only: [normalize: 1]
+
+  @assets_path Application.compile_env(:phoenix_asset_pipeline, :assets_path, "assets")
+
+  def assets_path, do: normalize(@assets_path)
+  def css_path, do: Path.join(assets_path(), "css")
+  def img_path, do: Path.join(assets_path(), "img")
+  def js_path, do: Path.join(assets_path(), "js")
+
+  def sass_extension do
+    case Application.get_env(:phoenix_asset_pipeline, :sass_extension, "sass") do
+      extname when extname in ["sass", "scss"] ->
+        "." <> extname
+
+      _ ->
+        raise ArgumentError, """
+        Invalid :sass_extension key value.
+        Make sure the value in your config/config.exs file is "sass" or "scss"
+        """
+    end
+  end
 
   def obfuscate_class_names? do
-    case Application.get_env(@app, :obfuscate_class_names, true) do
+    case Application.get_env(:phoenix_asset_pipeline, :obfuscate_class_names, true) do
       bool when is_boolean(bool) ->
         bool
 
       _ ->
         raise ArgumentError, """
         Invalid :obfuscate_class_names key value.
-
-        Make sure the value is defined in your config/config.exs file, as boolean:
-
-           config :phoenix_asset_pipeline, obfuscate_class_names: true
-
+        Make sure the value in your config/config.exs file is boolean:
         """
     end
   end
-
-  def sri_hash_algoritm do
-    case Application.get_env(@app, :subresource_integrity_length, 512) do
-      length when is_integer(length) ->
-        hash_algoritm(length)
-
-      _ ->
-        raise ArgumentError, """
-        Invalid :subresource_integrity_length key value.
-
-        Make sure the Subresource Integrity algorithm length is defined in your config/config.exs file, as integer:
-
-           config :phoenix_asset_pipeline, subresource_integrity_length: 256 # 384, 512
-
-        """
-    end
-  end
-
-  # https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity
-  #
-  # Allowed sha256, sha384, and sha512 algorithms
-  defp hash_algoritm(256), do: "sha256"
-  defp hash_algoritm(384), do: "sha384"
-  defp hash_algoritm(512), do: "sha512"
 end

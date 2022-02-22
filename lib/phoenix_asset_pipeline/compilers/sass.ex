@@ -1,11 +1,15 @@
 defmodule PhoenixAssetPipeline.Compilers.Sass do
   @moduledoc false
 
-  import PhoenixAssetPipeline.Config
-
   require Logger
 
-  alias PhoenixAssetPipeline.{Compiler, Exceptions.SassCompilerError, Obfuscator, Utils}
+  alias PhoenixAssetPipeline.{
+    Compiler,
+    Config,
+    Exceptions.SassCompilerError,
+    Obfuscator,
+    Utils
+  }
 
   @behaviour Compiler
 
@@ -18,15 +22,19 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
   def compile!(path) do
     Utils.install_sass()
 
-    args = []
-    bin = DartSass.bin_path()
-    opts = ~w(--embed-source-map --color --indented --stop-on-error --style=compressed)
+    path = path(path, Path.extname(path))
 
-    case Utils.cmd(bin, args ++ opts ++ [Path.join(Utils.assets_path(), "#{path}.sass")]) do
+    opts =
+      opts(
+        ~w(--embed-source-map --color --stop-on-error --style=compressed --quiet-deps),
+        Path.extname(path)
+      ) ++ [Path.join(Config.css_path(), path)]
+
+    case Utils.cmd(DartSass.bin_path(), opts) do
       {css, 0} ->
         {
-          content(css, obfuscate_class_names?()),
-          integrity(css)
+          obfuscate(css, Config.obfuscate_class_names?()),
+          Utils.integrity(css)
         }
 
       {msg, _} ->
@@ -39,13 +47,12 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
     end
   end
 
-  defp content(css, true), do: Obfuscator.obfuscate_css(css)
-  defp content(css, _), do: css
+  defp opts(opts, ".sass"), do: ["--indented" | opts]
+  defp opts(opts, _), do: opts
 
-  defp integrity(css) do
-    sri_hash_algoritm()
-    |> String.to_atom()
-    |> :crypto.hash(css)
-    |> Base.encode64()
-  end
+  defp path(path, ""), do: path <> Config.sass_extension()
+  defp path(path, _), do: path
+
+  defp obfuscate(css, true), do: Obfuscator.obfuscate_css(css)
+  defp obfuscate(css, _), do: css
 end

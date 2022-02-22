@@ -27,11 +27,14 @@ defmodule PhoenixAssetPipeline.Obfuscator do
     short
   end
 
-  def obfuscate_css(css) when is_binary(css) do
-    # Matches a valid CSS class name. Read more https://rgxdb.com/r/3SSUL9QL
-    Regex.replace(~r{\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}, css, fn _, class_name, _ ->
+  def obfuscate_css(content) when is_binary(content) do
+    Regex.replace(~r{\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}, content, fn _, class_name, _ ->
       "." <> obfuscate(class_name)
     end)
+  end
+
+  def obfuscate_js(content) when is_binary(content) do
+    content
   end
 
   defp inc(class_name, count), do: obfuscate(class_name, count + 1)

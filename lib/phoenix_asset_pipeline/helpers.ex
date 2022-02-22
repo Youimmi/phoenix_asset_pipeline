@@ -2,23 +2,28 @@ defmodule PhoenixAssetPipeline.Helpers do
   @moduledoc false
 
   import Phoenix.HTML.Tag
-  import PhoenixAssetPipeline.Config
   alias Phoenix.LiveView
   alias PhoenixAssetPipeline.Compilers.{Esbuild, Sass}
-  alias PhoenixAssetPipeline.{Obfuscator, Utils}
+  alias PhoenixAssetPipeline.{Config, Obfuscator, Utils}
   alias Plug.Conn
 
+  @assets_url Application.compile_env(:phoenix_asset_pipeline, :assets_url)
   @port Application.compile_env(:asset_pipeline, :port, 4001)
 
-  defmacro __using__(_opts) do
+  defmacro __using__(_) do
     quote do
       import PhoenixAssetPipeline.Helpers
 
       if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
-        for path <-
-              [File.cwd!(), Utils.assets_path(), "**/*.{sass,scss}"]
-              |> Path.join()
-              |> Path.wildcard() do
+        root = File.cwd!()
+
+        paths = [
+          Path.join([root, Config.css_path(), "**/*.{css,sass,scss}"]),
+          Path.join([root, Config.img_path(), "**/*"]),
+          Path.join([root, Config.js_path(), "**/*.{cjs,js,mjs,ts}"])
+        ]
+
+        for path <- Path.wildcard(paths) do
           @external_resource path
         end
       else
@@ -31,7 +36,7 @@ defmodule PhoenixAssetPipeline.Helpers do
     classes = String.split(name, " ", trim: true)
 
     classes =
-      case obfuscate_class_names?() do
+      case Config.obfuscate_class_names?() do
         true ->
           Enum.reduce(classes, "", fn class_name, classes ->
             classes <> " " <> Obfuscator.obfuscate(class_name)
@@ -49,7 +54,59 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   defmacro style_tag(path, opts \\ []) when is_binary(path) and is_list(opts) do
     {css, integrity} = Sass.new(path)
-    content_tag(:style, {:safe, css}, put_integrity(opts, integrity))
+    content_tag(:style, {:safe, css}, put_integrity(integrity, opts))
+  end
+
+  defmacro image_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
+    {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
+
+    file_path = Path.join([File.cwd!(), Config.img_path(), path])
+    content = File.read!(file_path)
+    digest = Utils.digest(content)
+    extname = Path.extname(file_path)
+
+    quote bind_quoted: [
+            digest: digest,
+            extname: extname,
+            hostname: hostname,
+            name: name,
+            opts: put_integrity(Utils.integrity(content), opts),
+            path: path
+          ] do
+      opts =
+        base_url(hostname, "img")
+        |> src(name, digest, extname)
+        |> put_src(opts)
+
+      img_tag(Path.join(Config.img_path(), path), opts)
+    end
+  end
+
+  defmacro script_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
+    {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
+
+    {content, integrity} = Esbuild.new(path)
+    digest = Utils.digest(content)
+
+    # dets_file = Utils.dets_file(__MODULE__) |> String.to_charlist()
+    # {:ok, table} = :dets.open_file(dets_file, type: :set)
+    # :dets.insert_new(table, {path, digest, name})
+    # :dets.close(dets_file)
+
+    quote bind_quoted: [
+            content: content,
+            digest: digest,
+            hostname: hostname,
+            name: name,
+            opts: put_integrity(integrity, opts)
+          ] do
+      opts =
+        base_url(hostname, "js")
+        |> src(name, digest, ".js")
+        |> put_src(opts)
+
+      content_tag(:script, {:safe, content}, opts)
+    end
   end
 
   if Code.ensure_compiled(LiveView) do
@@ -57,74 +114,31 @@ defmodule PhoenixAssetPipeline.Helpers do
       LiveView.assign_new(socket, :assets_url, fn -> assets_url end)
     end
 
-    def assign_assets_url(socket, _session), do: socket
+    def assign_assets_url(socket, _), do: socket
   end
 
-  def base_url(hostname) when is_binary(hostname), do: normalize_url(hostname)
+  def base_url(hostname, _ \\ nil)
 
-  def base_url(hostname) do
-    Application.get_env(:phoenix_asset_pipeline, :assets_url) || hostname
+  def base_url(hostname, _) when is_binary(hostname) do
+    Utils.normalize(hostname)
   end
 
-  def image_tag(%Conn{} = conn, path, opts) do
-    image_tag(default_hostname(conn) <> "/img/", path, opts)
+  def base_url(%Conn{} = conn, path) do
+    base_url(@assets_url || "#{conn.scheme}://#{conn.host}:#{@port}")
+    |> URI.merge(path)
   end
 
-  def image_tag(assets_url, path, opts) when is_binary(assets_url) do
-    img_tag(build_url(assets_url, "img/" <> path), opts)
+  def put_src(url, opts) when is_binary(url) and is_list(opts) do
+    Keyword.put_new(opts, :src, url)
   end
 
-  defmacro script_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
-    {name, opts} = Keyword.pop(opts, :name, path)
-    {js, integrity} = Esbuild.new(path)
-
-    digest =
-      :erlang.md5(path)
-      |> Base.encode16(case: :lower)
-
-    dets_file = Utils.dets_file(__MODULE__) |> String.to_charlist()
-    {:ok, table} = :dets.open_file(dets_file, type: :set)
-    :dets.insert_new(table, {path, digest, name})
-    :dets.close(dets_file)
-
-    quote bind_quoted: [
-            digest: digest,
-            hostname: hostname,
-            js: js,
-            name: name,
-            opts: put_integrity(opts, integrity)
-          ] do
-      content_tag(:script, {:safe, js}, put_src(opts, base_url(hostname), name, digest))
-    end
+  def src(url, name, digest, extname) do
+    "#{url}/#{name}-#{digest}#{extname}"
   end
 
-  def put_src(opts, %Conn{} = conn, name, digest) do
-    put_src(opts, default_hostname(conn) <> "/js/", name, digest)
+  defp put_integrity(hash, opts) when is_binary(hash) and is_list(opts) do
+    Keyword.put_new(opts, :integrity, "sha512-" <> hash)
   end
 
-  def put_src(opts, assets_url, name, digest)
-      when is_list(opts) and
-             is_binary(assets_url) and
-             is_binary(name) and
-             is_binary(digest) do
-    Keyword.put_new(opts, :src, build_url(assets_url, name <> "-" <> digest <> ".js"))
-  end
-
-  defp build_url(hostname, path) do
-    URI.merge(hostname, path) |> URI.to_string()
-  end
-
-  defp default_hostname(%Conn{} = conn) do
-    "#{conn.scheme}://#{conn.host}:#{@port}"
-  end
-
-  defp normalize_url(hostname) do
-    Regex.replace(~r/(\/)*$/, hostname, "") <> "/"
-  end
-
-  defp put_integrity(opts, hash) when is_list(opts) and is_binary(hash) do
-    Keyword.put_new(opts, :integrity, sri_hash_algoritm() <> "-" <> hash)
-  end
-
-  defp put_integrity(opts, _), do: opts
+  defp put_integrity(_, opts), do: opts
 end
