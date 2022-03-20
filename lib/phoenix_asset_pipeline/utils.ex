@@ -5,18 +5,25 @@ defmodule PhoenixAssetPipeline.Utils do
     List.keymember?(Application.started_applications(), :phoenix_asset_pipeline, 0)
   end
 
-  def cmd(path, args) do
-    cmd(path, args, stderr_to_stdout: true)
+  def cmd([command | args], extra_args, opts) do
+    System.cmd(command, args ++ extra_args, opts)
   end
 
   def dets_file(module) when is_atom(module) do
     file_name =
       Module.split(module)
-      |> Enum.map_join(".", &Macro.underscore(&1))
+      |> Enum.map_join(".", &Macro.underscore/1)
 
-    if Code.ensure_loaded?(Mix.Project),
-      do: Path.join(Path.dirname(Mix.Project.build_path()), file_name),
-      else: Path.expand("_build/" <> file_name)
+    if Code.ensure_loaded?(Mix.Project) do
+      Path.join(Path.dirname(Mix.Project.build_path()), file_name)
+    else
+      Path.expand("_build/" <> file_name)
+    end
+    |> String.to_charlist()
+  end
+
+  def dets_table(file) do
+    with {:ok, table} <- :dets.open_file(file, type: :set), do: table
   end
 
   def digest(content) do
@@ -43,10 +50,6 @@ defmodule PhoenixAssetPipeline.Utils do
 
   def normalize(path) do
     Regex.replace(~r/(\/)*$/, path, "")
-  end
-
-  defp cmd([command | args], extra_args, opts) do
-    System.cmd(command, args ++ extra_args, opts)
   end
 
   defp path_exists?(path) when is_list(path) do

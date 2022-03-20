@@ -3,13 +3,9 @@ ExUnit.start()
 defmodule TestHelper do
   defmacro __using__(_) do
     quote do
-      import TestHelper
+      alias PhoenixAssetPipeline.Utils
 
-      @application_started? started?()
+      @application_started? Utils.application_started?()
     end
-  end
-
-  def started? do
-    List.keymember?(Application.started_applications(), :phoenix_asset_pipeline, 0)
   end
 end

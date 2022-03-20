@@ -4,8 +4,8 @@ defmodule PhoenixAssetPipeline.Obfuscator do
   alias PhoenixAssetPipeline.Utils
 
   def obfuscate(class_name, count \\ 0) when is_binary(class_name) and is_integer(count) do
-    dets_file = Utils.dets_file(__MODULE__) |> String.to_charlist()
-    {:ok, table} = :dets.open_file(dets_file, type: :set)
+    dets_file = Utils.dets_file(__MODULE__)
+    table = Utils.dets_table(dets_file)
 
     short = minify(class_name, count)
     key = {"class", short}

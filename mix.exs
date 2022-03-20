@@ -57,6 +57,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:dialyxir, "~> 1.1", only: [:dev, :test], runtime: false},
       {:esbuild, github: "phoenixframework/esbuild", runtime: Mix.env() == :dev, override: true},
       {:ex_doc, "~> 0.28", only: :dev, runtime: false},
+      {:floki, ">= 0.32.0"},
       {:jason, "~> 1.3"},
       {:phoenix, "~> 1.6"},
       {:phoenix_html, "~> 3.2"},

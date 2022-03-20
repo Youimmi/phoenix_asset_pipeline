@@ -23,19 +23,18 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
     Utils.install_sass()
 
     path = path(path, Path.extname(path))
+    args = ~w(--embed-source-map --color --stop-on-error --style=compressed --quiet-deps)
+    args = args(args, Path.extname(path)) ++ [Path.join(Config.css_path(), path)]
 
-    opts =
-      opts(
-        ~w(--embed-source-map --color --stop-on-error --style=compressed --quiet-deps),
-        Path.extname(path)
-      ) ++ [Path.join(Config.css_path(), path)]
+    opts = [
+      cd: File.cwd!(),
+      stderr_to_stdout: true
+    ]
 
-    case Utils.cmd(DartSass.bin_path(), opts) do
+    case Utils.cmd(DartSass.bin_path(), args, opts) do
       {css, 0} ->
-        {
-          obfuscate(css, Config.obfuscate_class_names?()),
-          Utils.integrity(css)
-        }
+        css = Obfuscator.obfuscate_css(css)
+        {css, Utils.integrity(css)}
 
       {msg, _} ->
         if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
@@ -47,12 +46,9 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
     end
   end
 
-  defp opts(opts, ".sass"), do: ["--indented" | opts]
-  defp opts(opts, _), do: opts
+  defp args(args, ".sass"), do: ["--indented" | args]
+  defp args(args, _), do: args
 
-  defp path(path, ""), do: path <> Config.sass_extension()
+  defp path(path, ""), do: path <> ".sass"
   defp path(path, _), do: path
-
-  defp obfuscate(css, true), do: Obfuscator.obfuscate_css(css)
-  defp obfuscate(css, _), do: css
 end
