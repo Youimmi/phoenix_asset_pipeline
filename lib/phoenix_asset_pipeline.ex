@@ -18,7 +18,7 @@ defmodule PhoenixAssetPipeline do
   defp config do
     [
       http: [
-        compress: true,
+        compress: false,
         port: 4001,
         protocol_options: [
           {:env, %{dispatch: {:persistent_term, :phoenix_asset_pipeline_dispatch}}}

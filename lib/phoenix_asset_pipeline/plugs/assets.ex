@@ -11,7 +11,7 @@ defmodule PhoenixAssetPipeline.Plugs.Assets do
   @behaviour Plug
   @on_load :preload
   @allowed_methods ~w(GET HEAD)
-  @pattern ~r/(?<name>.*)-(?<digest>.{32})\.(?<extname>.+)$/
+  @pattern ~r/((?<name>.*)-)?(?<digest>.{32})\.(?<extname>.+)$/
 
   @impl true
   def init(opts), do: opts
@@ -21,10 +21,14 @@ defmodule PhoenixAssetPipeline.Plugs.Assets do
       when method in @allowed_methods do
     case Regex.named_captures(@pattern, Enum.map_join(segments, "/", &URI.decode/1)) do
       %{"extname" => extname, "digest" => digest, "name" => name} ->
-        extname = "." <> extname
+        encoding =
+          get_req_header(conn, "accept-encoding")
+          |> fetch_encoding()
 
-        Storage.get({extname, name, digest})
-        |> serve_asset(conn, extname)
+        extname = Path.rootname(extname)
+
+        Storage.get({"." <> extname <> encoding, name, digest})
+        |> serve_asset(extname, encoding, conn)
 
       _ ->
         conn
@@ -32,14 +36,6 @@ defmodule PhoenixAssetPipeline.Plugs.Assets do
   end
 
   def call(conn, _), do: conn
-
-  # defp accept_encoding?(conn, encoding) do
-  #   encoding? = &String.contains?(&1, [encoding, "*"])
-
-  #   Enum.any?(get_req_header(conn, "accept-encoding"), fn accept ->
-  #     accept |> Plug.Conn.Utils.list() |> Enum.any?(encoding?)
-  #   end)
-  # end
 
   def preload do
     dets_file = Utils.dets_file(Helpers)
@@ -57,26 +53,34 @@ defmodule PhoenixAssetPipeline.Plugs.Assets do
     :ok
   end
 
-  defp content_type(".js"), do: "application/javascript"
-  defp content_type(type), do: MIME.type(type)
+  defp brotli_requested?(accept) do
+    Plug.Conn.Utils.list(accept)
+    |> Enum.any?(&String.contains?(&1, ["br", "*"]))
+  end
 
-  defp encoding("br"), do: "br"
-  defp encoding("gz"), do: "gzip"
-  defp encoding(_), do: nil
+  defp fetch_encoding([accept]) when is_binary(accept) do
+    if brotli_requested?(accept), do: ".br", else: ""
+  end
 
-  defp maybe_add_encoding(conn, nil), do: conn
-  defp maybe_add_encoding(conn, ce), do: put_resp_header(conn, "content-encoding", ce)
+  defp fetch_encoding(_), do: ""
 
-  defp serve_asset(nil, conn, _), do: conn
+  defp maybe_add_encoding(conn, ".br"), do: put_resp_header(conn, "content-encoding", "br")
+  defp maybe_add_encoding(conn, _), do: conn
 
-  defp serve_asset(data, conn, extname) do
-    encoding = encoding(Path.extname(extname))
+  defp serve_asset(nil, _, _, conn), do: conn
+
+  defp serve_asset(data, extname, encoding, conn) do
+    # range = get_req_header(conn, "range")
+
+    # IO.inspect(conn)
 
     conn
     |> maybe_add_encoding(encoding)
     |> put_resp_header("accept-ranges", "bytes")
     |> put_resp_header("access-control-allow-origin", "*")
-    |> put_resp_header("content-type", content_type(extname))
+    |> put_resp_header("cache-control", "public, max-age=31536000")
+    |> put_resp_header("content-type", MIME.type(extname))
+    |> put_resp_header("vary", "Accept-Encoding")
     |> send_resp(200, data)
     |> halt()
   end

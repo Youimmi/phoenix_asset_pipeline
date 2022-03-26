@@ -52,7 +52,8 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   defmacro image_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
     {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
-    file_path = Path.join([File.cwd!(), Config.img_path(), path])
+    %{fragment: fragment, path: file_path} = URI.parse(path)
+    file_path = Path.join([File.cwd!(), Config.img_path(), file_path])
     extname = Path.extname(file_path)
     content = File.read!(file_path)
     digest = Utils.digest(content)
@@ -60,22 +61,38 @@ defmodule PhoenixAssetPipeline.Helpers do
 
     cache(extname, name, digest, content)
 
+    # opts =
+    #   case Keyword.pop(opts, :srcset) do
+    #     {nil, opts} -> opts
+    #     {srcset, opts} -> [srcset: stringify_srcset(srcset)] ++ opts
+    #   end
+
     quote bind_quoted: [
             digest: digest,
             extname: extname,
+            fragment: fragment,
             hostname: hostname,
             name: name,
-            opts: put_integrity(integrity, opts),
-            path: path
+            opts: put_integrity(integrity, opts)
           ] do
       opts =
         base_url(hostname)
         |> src(name, digest, extname)
+        |> maybe_add_fragment(fragment)
         |> put_src(opts)
 
-      img_tag(Path.join(Config.img_path(), path), opts)
+      tag(:img, opts)
     end
   end
+
+  # defp stringify_srcset(srcset) when is_map(srcset) or is_list(srcset) do
+  #   Enum.map_join(srcset, ", ", fn
+  #     {src, descriptor} -> "#{src} #{descriptor}"
+  #     default -> default
+  #   end)
+  # end
+
+  # defp stringify_srcset(srcset) when is_binary(srcset), do: srcset
 
   defmacro script_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
     {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
@@ -88,8 +105,7 @@ defmodule PhoenixAssetPipeline.Helpers do
             digest: digest,
             hostname: hostname,
             name: name,
-            opts: put_integrity(integrity, opts),
-            path: path
+            opts: put_integrity(integrity, opts)
           ] do
       opts =
         base_url(hostname)
@@ -100,7 +116,7 @@ defmodule PhoenixAssetPipeline.Helpers do
     end
   end
 
-  if Code.ensure_compiled(LiveView) do
+  if function_exported?(LiveView, :assign_new, 3) do
     def assign_assets_url(socket, %{"assets_url" => assets_url}) do
       LiveView.assign_new(socket, :assets_url, fn -> assets_url end)
     end
@@ -119,39 +135,36 @@ defmodule PhoenixAssetPipeline.Helpers do
     base_url(assets_url || "#{conn.scheme}://#{conn.host}:#{port}")
   end
 
+  def maybe_add_fragment(url, fragment) when is_binary(fragment) and byte_size(fragment) > 0 do
+    url <> "#" <> fragment
+  end
+
+  def maybe_add_fragment(url, _), do: url
+
   def put_src(url, opts) when is_binary(url) and is_list(opts) do
     Keyword.put_new(opts, :src, url)
   end
 
   def src(url, name, digest, extname) do
-    "#{url}/#{name}-#{digest}#{extname}"
+    "#{url}/#{name(name)}#{digest}#{extname}"
   end
 
   defp cache(extname, name, digest, content) do
     {:ok, br_data} = :brotli.encode(content)
     br_extname = extname <> ".br"
-    gz_data = :zlib.gzip(content)
-    gz_extname = extname <> ".gz"
+    dets_file = Utils.dets_file(__MODULE__)
+    table = Utils.dets_table(dets_file)
 
-    [
-      Task.async(fn ->
-        Storage.put({extname, name, digest}, content)
-        Storage.put({br_extname, name, digest}, br_data)
-        Storage.put({gz_extname, name, digest}, gz_data)
-      end),
-      Task.async(fn ->
-        dets_file = Utils.dets_file(__MODULE__)
-        table = Utils.dets_table(dets_file)
+    :dets.insert(table, {{extname, name, digest}, content})
+    :dets.insert(table, {{br_extname, name, digest}, br_data})
+    :dets.close(dets_file)
 
-        :dets.insert(table, {{extname, name, digest}, content})
-        :dets.insert(table, {{br_extname, name, digest}, br_data})
-        :dets.insert(table, {{gz_extname, name, digest}, gz_data})
-
-        :dets.close(dets_file)
-      end)
-    ]
-    |> Enum.map(&Task.await/1)
+    Storage.put({extname, name, digest}, content)
+    Storage.put({br_extname, name, digest}, br_data)
   end
+
+  defp name(""), do: ""
+  defp name(name), do: name <> "-"
 
   defp put_integrity(hash, opts) when is_binary(hash) and is_list(opts) do
     Keyword.put_new(opts, :integrity, "sha512-" <> hash)
