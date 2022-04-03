@@ -16,7 +16,7 @@ defmodule PhoenixAssetPipeline.Plugs.Helpers do
 
   defp minify(%{resp_headers: [{"content-type", "text/html" <> _} | _]} = conn) do
     body = Floki.parse_document!(conn.resp_body)
-    %Conn{conn | resp_body: Floki.raw_html(body)}
+    %Conn{conn | resp_body: "<!DOCTYPE html>" <> Floki.raw_html(body)}
   end
 
   defp minify(conn), do: conn

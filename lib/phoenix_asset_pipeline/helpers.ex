@@ -52,20 +52,13 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   defmacro image_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
     {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
-    %{fragment: fragment, path: file_path} = URI.parse(path)
-    file_path = Path.join([File.cwd!(), Config.img_path(), file_path])
-    extname = Path.extname(file_path)
-    content = File.read!(file_path)
-    digest = Utils.digest(content)
-    integrity = Utils.integrity(content)
+    {digest, extname, fragment, integrity} = cache_image(path, name)
 
-    cache(extname, name, digest, content)
-
-    # opts =
-    #   case Keyword.pop(opts, :srcset) do
-    #     {nil, opts} -> opts
-    #     {srcset, opts} -> [srcset: stringify_srcset(srcset)] ++ opts
-    #   end
+    {srcset, opts} =
+      case Keyword.pop(opts, :srcset) do
+        {nil, opts} -> {nil, opts}
+        {srcset, opts} -> {srcset(srcset), opts}
+      end
 
     quote bind_quoted: [
             digest: digest,
@@ -73,26 +66,32 @@ defmodule PhoenixAssetPipeline.Helpers do
             fragment: fragment,
             hostname: hostname,
             name: name,
-            opts: put_integrity(integrity, opts)
+            opts: put_integrity(integrity, opts),
+            srcset: srcset
           ] do
       opts =
         base_url(hostname)
         |> src(name, digest, extname)
         |> maybe_add_fragment(fragment)
         |> put_src(opts)
+        |> put_srcset(hostname, srcset)
 
       tag(:img, opts)
     end
   end
 
-  # defp stringify_srcset(srcset) when is_map(srcset) or is_list(srcset) do
-  #   Enum.map_join(srcset, ", ", fn
-  #     {src, descriptor} -> "#{src} #{descriptor}"
-  #     default -> default
-  #   end)
-  # end
+  def cache_image(path, name) do
+    %{fragment: fragment, path: file_path} = URI.parse(path)
+    file_path = Path.join([File.cwd!(), Config.img_path(), file_path])
+    extname = Path.extname(file_path)
+    content = File.read!(file_path)
+    digest = Utils.digest(content)
+    integrity = Utils.integrity(content)
 
-  # defp stringify_srcset(srcset) when is_binary(srcset), do: srcset
+    cache(extname, Path.rootname(name || path), digest, content)
+
+    {digest, extname, fragment, integrity}
+  end
 
   defmacro script_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
     {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
@@ -145,6 +144,27 @@ defmodule PhoenixAssetPipeline.Helpers do
     Keyword.put_new(opts, :src, url)
   end
 
+  def put_srcset(opts, _, srcset) when is_binary(srcset) and byte_size(srcset) > 0 do
+    Keyword.put_new(opts, :srcset, srcset)
+  end
+
+  def put_srcset(opts, hostname, srcset) when is_list(srcset) and length(srcset) > 0 do
+    srcset =
+      Enum.map_join(srcset, ", ", fn
+        [extname, name, digest, fragment, descriptor, _] ->
+          src =
+            base_url(hostname)
+            |> src(name, digest, extname)
+            |> maybe_add_fragment(fragment)
+
+          src <> " " <> descriptor
+      end)
+
+    put_srcset(opts, hostname, srcset)
+  end
+
+  def put_srcset(opts, _, _), do: opts
+
   def src(url, name, digest, extname) do
     "#{url}/#{name(name)}#{digest}#{extname}"
   end
@@ -155,12 +175,14 @@ defmodule PhoenixAssetPipeline.Helpers do
     dets_file = Utils.dets_file(__MODULE__)
     table = Utils.dets_table(dets_file)
 
-    :dets.insert(table, {{extname, name, digest}, content})
-    :dets.insert(table, {{br_extname, name, digest}, br_data})
-    :dets.close(dets_file)
+    with false <- :dets.member(table, {extname, name, digest}) do
+      :dets.insert(table, {{extname, name, digest}, content})
+      :dets.insert(table, {{br_extname, name, digest}, br_data})
+      :dets.close(dets_file)
 
-    Storage.put({extname, name, digest}, content)
-    Storage.put({br_extname, name, digest}, br_data)
+      Storage.put({extname, name, digest}, content)
+      Storage.put({br_extname, name, digest}, br_data)
+    end
   end
 
   defp name(""), do: ""
@@ -171,4 +193,18 @@ defmodule PhoenixAssetPipeline.Helpers do
   end
 
   defp put_integrity(_, opts), do: opts
+
+  defp srcset(srcset) when is_map(srcset) or is_list(srcset) do
+    Enum.map(srcset, fn
+      {{path, name}, descriptor} when is_binary(path) and is_binary(name) ->
+        {digest, extname, fragment, integrity} = cache_image(path, name)
+        [extname, name, digest, fragment, descriptor, integrity]
+
+      {path, descriptor} when is_binary(path) ->
+        {digest, extname, fragment, integrity} = cache_image(path, "")
+        [extname, Path.rootname(path), digest, fragment, descriptor, integrity]
+    end)
+  end
+
+  defp srcset(srcset), do: srcset
 end
