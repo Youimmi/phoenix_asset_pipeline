@@ -80,7 +80,7 @@ defmodule PhoenixAssetPipeline.Helpers do
     end
   end
 
-  def cache_image(path, name) do
+  def cache_image(path, name) when is_binary(path) do
     %{fragment: fragment, path: file_path} = URI.parse(path)
     file_path = Path.join([File.cwd!(), Config.img_path(), file_path])
     extname = Path.extname(file_path)
@@ -186,7 +186,7 @@ defmodule PhoenixAssetPipeline.Helpers do
   end
 
   defp name(""), do: ""
-  defp name(name), do: name <> "-"
+  defp name(name) when is_binary(name), do: name <> "-"
 
   defp put_integrity(hash, opts) when is_binary(hash) and is_list(opts) do
     Keyword.put_new(opts, :integrity, "sha512-" <> hash)
@@ -195,16 +195,18 @@ defmodule PhoenixAssetPipeline.Helpers do
   defp put_integrity(_, opts), do: opts
 
   defp srcset(srcset) when is_map(srcset) or is_list(srcset) do
-    Enum.map(srcset, fn
-      {{path, name}, descriptor} when is_binary(path) and is_binary(name) ->
-        {digest, extname, fragment, integrity} = cache_image(path, name)
-        [extname, name, digest, fragment, descriptor, integrity]
-
-      {path, descriptor} when is_binary(path) ->
-        {digest, extname, fragment, integrity} = cache_image(path, "")
-        [extname, Path.rootname(path), digest, fragment, descriptor, integrity]
-    end)
+    Enum.map(srcset, &srcset_src(&1))
   end
 
   defp srcset(srcset), do: srcset
+
+  defp srcset_src({{path, name}, descriptor}) when is_binary(path) do
+    {digest, extname, fragment, integrity} = cache_image(path, name)
+    [extname, name, digest, fragment, descriptor, integrity]
+  end
+
+  defp srcset_src({path, descriptor}) when is_binary(path) do
+    {digest, extname, fragment, integrity} = cache_image(path, nil)
+    [extname, Path.rootname(path), digest, fragment, descriptor, integrity]
+  end
 end
