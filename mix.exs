@@ -2,9 +2,8 @@ defmodule PhoenixAssetPipeline.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @description """
-  Asset pipeline for Phoenix app
-  """
+  @description "Asset pipeline for Phoenix app"
+  @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
 
   def project do
     [
@@ -17,10 +16,8 @@ defmodule PhoenixAssetPipeline.MixProject do
       package: package(),
       deps: deps(),
       aliases: aliases(),
-      dialyzer: [
-        plt_add_apps: [:mix]
-      ],
-      source_url: "https://github.com/Youimmi/phoenix_asset_pipeline"
+      dialyzer: [plt_add_apps: [:mix, :phoenix_live_view]],
+      source_url: @source_url
     ]
   end
 
@@ -44,18 +41,19 @@ defmodule PhoenixAssetPipeline.MixProject do
       files: ["lib", "LICENSE", "mix.exs", "README.md"],
       maintainers: [],
       licenses: ["MIT"],
-      links: %{"GitHub" => "https://github.com/Youimmi/phoenix_asset_pipeline"}
+      links: %{"GitHub" => @source_url}
     ]
   end
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:brotli, "~> 0.3.1"},
+      {:brotli, "~> 0.3"},
       {:credo, github: "rrrene/credo", only: [:dev, :test], runtime: false},
-      {:dart_sass, github: "CargoSense/dart_sass", runtime: Mix.env() == :dev},
+      {:dart_sass, github: "CargoSense/dart_sass", runtime: Mix.env() in [:dev, :test]},
       {:dialyxir, "~> 1.1", only: [:dev, :test], runtime: false},
-      {:esbuild, github: "phoenixframework/esbuild", runtime: Mix.env() == :dev, override: true},
+      {:esbuild,
+       github: "phoenixframework/esbuild", runtime: Mix.env() in [:dev, :test], override: true},
       {:ex_doc, "~> 0.28", only: :dev, runtime: false},
       {:floki, ">= 0.32.1"},
       {:jason, "~> 1.3"},

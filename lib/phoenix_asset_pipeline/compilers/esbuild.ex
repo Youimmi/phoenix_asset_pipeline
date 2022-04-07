@@ -23,7 +23,12 @@ defmodule PhoenixAssetPipeline.Compilers.Esbuild do
     Utils.install_esbuild()
 
     path = path(path, Path.extname(path))
-    args = ~w(--bundle --tree-shaking=true --minify --target=es2020 --sourcemap=inline)
+    args = ~w(--bundle --tree-shaking=true --minify --target=es2020)
+
+    args =
+      if Code.ensure_loaded?(IEx),
+        do: ["--sourcemap=inline" | args],
+        else: args
 
     opts = [
       cd: Path.join(File.cwd!(), Config.js_path()),

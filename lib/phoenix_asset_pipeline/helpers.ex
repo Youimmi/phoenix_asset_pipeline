@@ -3,7 +3,6 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   import Phoenix.HTML.Tag
 
-  alias Phoenix.LiveView
   alias PhoenixAssetPipeline.Compilers.{Esbuild, Sass}
   alias PhoenixAssetPipeline.{Config, Obfuscator, Storage, Utils}
   alias Plug.Conn
@@ -14,6 +13,7 @@ defmodule PhoenixAssetPipeline.Helpers do
 
     quote do
       import PhoenixAssetPipeline.Helpers
+      import PhoenixAssetPipeline.Obfuscator
 
       if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
         root = File.cwd!()
@@ -45,11 +45,6 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   defmacro class(_), do: []
 
-  defmacro style_tag(path, opts \\ []) when is_binary(path) and is_list(opts) do
-    {css, integrity} = Sass.new(path)
-    content_tag(:style, {:safe, css}, put_integrity(integrity, opts))
-  end
-
   defmacro image_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
     {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
     {digest, extname, fragment, integrity} = cache_image(path, name)
@@ -80,19 +75,6 @@ defmodule PhoenixAssetPipeline.Helpers do
     end
   end
 
-  def cache_image(path, name) when is_binary(path) do
-    %{fragment: fragment, path: file_path} = URI.parse(path)
-    file_path = Path.join([File.cwd!(), Config.img_path(), file_path])
-    extname = Path.extname(file_path)
-    content = File.read!(file_path)
-    digest = Utils.digest(content)
-    integrity = Utils.integrity(content)
-
-    cache(extname, Path.rootname(name || path), digest, content)
-
-    {digest, extname, fragment, integrity}
-  end
-
   defmacro script_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
     {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
     {content, integrity} = Esbuild.new(path)
@@ -115,12 +97,9 @@ defmodule PhoenixAssetPipeline.Helpers do
     end
   end
 
-  if function_exported?(LiveView, :assign_new, 3) do
-    def assign_assets_url(socket, %{"assets_url" => assets_url}) do
-      LiveView.assign_new(socket, :assets_url, fn -> assets_url end)
-    end
-
-    def assign_assets_url(socket, _), do: socket
+  defmacro style_tag(path, opts \\ []) when is_binary(path) and is_list(opts) do
+    {css, integrity} = Sass.new(path)
+    content_tag(:style, {:safe, css}, put_integrity(integrity, opts))
   end
 
   def base_url(hostname) when is_binary(hostname) do
@@ -183,6 +162,19 @@ defmodule PhoenixAssetPipeline.Helpers do
       Storage.put({extname, name, digest}, content)
       Storage.put({br_extname, name, digest}, br_data)
     end
+  end
+
+  defp cache_image(path, name) when is_binary(path) do
+    %{fragment: fragment, path: file_path} = URI.parse(path)
+    file_path = Path.join([File.cwd!(), Config.img_path(), file_path])
+    extname = Path.extname(file_path)
+    content = File.read!(file_path)
+    digest = Utils.digest(content)
+    integrity = Utils.integrity(content)
+
+    cache(extname, Path.rootname(name || path), digest, content)
+
+    {digest, extname, fragment, integrity}
   end
 
   defp name(""), do: ""
