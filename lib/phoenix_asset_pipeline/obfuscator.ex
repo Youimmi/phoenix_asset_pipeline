@@ -28,7 +28,7 @@ defmodule PhoenixAssetPipeline.Obfuscator do
   end
 
   def obfuscate_css(content) when is_binary(content) do
-    Regex.replace(~r{\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}, content, fn _, class_name, _ ->
+    Regex.replace(~r{\.(?!phx-)(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}, content, fn _, class_name, _ ->
       "." <> obfuscate(class_name)
     end)
   end

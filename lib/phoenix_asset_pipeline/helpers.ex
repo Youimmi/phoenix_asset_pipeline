@@ -33,17 +33,19 @@ defmodule PhoenixAssetPipeline.Helpers do
     end
   end
 
-  defmacro class(name) when is_binary(name) do
+  defmacro class(_, _ \\ [])
+
+  defmacro class(name, opts) when is_binary(name) do
     classes =
       Enum.reduce(String.split(name), "", fn class_name, classes ->
         classes <> " " <> Obfuscator.obfuscate(class_name)
       end)
       |> String.trim_leading()
 
-    [class: classes]
+    Keyword.put(opts, :class, classes)
   end
 
-  defmacro class(_), do: []
+  defmacro class(_, opts), do: opts
 
   defmacro image_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
     {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
