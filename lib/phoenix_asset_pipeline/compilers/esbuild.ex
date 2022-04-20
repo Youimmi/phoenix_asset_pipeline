@@ -20,8 +20,6 @@ defmodule PhoenixAssetPipeline.Compilers.Esbuild do
 
   @impl true
   def compile!(path) do
-    Utils.install_esbuild()
-
     path = path(path, Path.extname(path))
     args = ~w(--bundle --tree-shaking=true --minify --target=es2020)
 

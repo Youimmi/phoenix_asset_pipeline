@@ -22,8 +22,6 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
 
   @impl true
   def compile!(path) do
-    Utils.install_sass()
-
     path = path(path, Path.extname(path))
     args = ~w(--color --load-path=assets/css --stop-on-error --style=compressed --quiet-deps)
 

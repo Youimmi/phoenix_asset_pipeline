@@ -3,12 +3,10 @@ defmodule PhoenixAssetPipeline do
   Asset pipeline for Phoenix app
   """
 
-  alias __MODULE__.{Endpoint, Utils}
+  alias __MODULE__.Endpoint
   alias Phoenix.Endpoint.{Cowboy2Adapter, Cowboy2Handler}
 
   def start(_type, _args) do
-    Utils.install_esbuild()
-    Utils.install_sass()
     upgrade_dispatch()
 
     children = Cowboy2Adapter.child_specs(Endpoint, config())

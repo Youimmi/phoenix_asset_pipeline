@@ -2,20 +2,24 @@ defmodule PhoenixAssetPipeline.Helpers do
   @moduledoc false
 
   import Phoenix.HTML.Tag
+  import PhoenixAssetPipeline.Utils
 
   alias PhoenixAssetPipeline.Compilers.{Esbuild, Sass}
-  alias PhoenixAssetPipeline.{Config, Obfuscator, Storage, Utils}
+  alias PhoenixAssetPipeline.{Config, Obfuscator, Storage}
   alias Plug.Conn
 
+  install_esbuild()
+  install_sass()
+
   defmacro __using__(_) do
-    Utils.dets_file(__MODULE__)
+    dets_file(__MODULE__)
     |> File.rm()
 
     quote do
       import PhoenixAssetPipeline.Helpers
       import PhoenixAssetPipeline.Obfuscator
 
-      if Code.ensure_loaded?(Mix.Project) and Utils.application_started?() do
+      if Code.ensure_loaded?(Mix.Project) and application_started?() do
         root = File.cwd!()
 
         glob = [
@@ -80,7 +84,7 @@ defmodule PhoenixAssetPipeline.Helpers do
   defmacro script_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
     {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
     {content, integrity} = Esbuild.new(path)
-    digest = Utils.digest(content)
+    digest = digest(content)
 
     cache(".js", name, digest, content)
 
@@ -105,7 +109,7 @@ defmodule PhoenixAssetPipeline.Helpers do
   end
 
   def base_url(hostname) when is_binary(hostname) do
-    Utils.normalize(hostname)
+    normalize(hostname)
   end
 
   def base_url(%Conn{} = conn) do
@@ -153,8 +157,8 @@ defmodule PhoenixAssetPipeline.Helpers do
   defp cache(extname, name, digest, content) do
     {:ok, br_data} = :brotli.encode(content)
     br_extname = extname <> ".br"
-    dets_file = Utils.dets_file(__MODULE__)
-    table = Utils.dets_table(dets_file)
+    dets_file = dets_file(__MODULE__)
+    table = dets_table(dets_file)
 
     with false <- :dets.member(table, {extname, name, digest}) do
       :dets.insert(table, {{extname, name, digest}, content})
@@ -171,8 +175,8 @@ defmodule PhoenixAssetPipeline.Helpers do
     file_path = Path.join([File.cwd!(), Config.img_path(), file_path])
     extname = Path.extname(file_path)
     content = File.read!(file_path)
-    digest = Utils.digest(content)
-    integrity = Utils.integrity(content)
+    digest = digest(content)
+    integrity = integrity(content)
 
     cache(extname, Path.rootname(name || path), digest, content)
 
