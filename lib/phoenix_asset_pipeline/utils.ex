@@ -1,6 +1,11 @@
 defmodule PhoenixAssetPipeline.Utils do
   @moduledoc false
 
+  defmacro __before_compile__(_) do
+    install_esbuild()
+    install_sass()
+  end
+
   def application_started? do
     List.keymember?(Application.started_applications(), :phoenix_asset_pipeline, 0)
   end

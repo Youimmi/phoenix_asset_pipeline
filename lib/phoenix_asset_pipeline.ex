@@ -6,6 +6,8 @@ defmodule PhoenixAssetPipeline do
   alias __MODULE__.Endpoint
   alias Phoenix.Endpoint.{Cowboy2Adapter, Cowboy2Handler}
 
+  @before_compile PhoenixAssetPipeline.Utils
+
   def start(_type, _args) do
     upgrade_dispatch()
 

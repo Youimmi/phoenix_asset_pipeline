@@ -8,9 +8,6 @@ defmodule PhoenixAssetPipeline.Helpers do
   alias PhoenixAssetPipeline.{Config, Obfuscator, Storage}
   alias Plug.Conn
 
-  install_esbuild()
-  install_sass()
-
   defmacro __using__(_) do
     dets_file(__MODULE__)
     |> File.rm()
