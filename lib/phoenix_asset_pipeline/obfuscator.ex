@@ -34,7 +34,9 @@ defmodule PhoenixAssetPipeline.Obfuscator do
   end
 
   def obfuscate_js(content) when is_binary(content) do
-    content
+    Regex.replace(~r{obfuscate\((-?[_a-zA-Z]+[_a-zA-Z0-9-]*)\)}, content, fn _, class_name, _ ->
+      obfuscate(class_name)
+    end)
   end
 
   defp inc(class_name, count), do: obfuscate(class_name, count + 1)
