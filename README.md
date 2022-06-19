@@ -1,7 +1,7 @@
 # PhoenixAssetPipeline
 Asset pipeline for Phoenix app
 
-[![CI](https://github.com/Youimmi/asset_pipeline/workflows/CI/badge.svg?branch=main&event=push)](https://github.com/Youimmi/asset_pipeline) [![hex.pm version](https://img.shields.io/hexpm/v/phoenix_asset_pipeline.svg)](https://hex.pm/packages/phoenix_asset_pipeline)
+[![CI](https://github.com/Youimmi/phoenix_asset_pipeline/workflows/CI/badge.svg?branch=main&event=push)](https://github.com/Youimmi/phoenix_asset_pipeline) [![hex.pm version](https://img.shields.io/hexpm/v/phoenix_asset_pipeline.svg)](https://hex.pm/packages/phoenix_asset_pipeline)
 
 ## Installation
 

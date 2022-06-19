@@ -1,9 +1,10 @@
 defmodule PhoenixAssetPipeline.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
   @description "Asset pipeline for Phoenix app"
+  @runtime Mix.env() in [:dev, :test]
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
+  @version "0.1.0"
 
   def project do
     [
@@ -49,11 +50,10 @@ defmodule PhoenixAssetPipeline.MixProject do
   defp deps do
     [
       {:brotli, "~> 0.3"},
-      {:credo, github: "rrrene/credo", only: [:dev, :test], runtime: false},
-      {:dart_sass, github: "CargoSense/dart_sass", runtime: Mix.env() in [:dev, :test]},
+      {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
+      {:dart_sass, "~> 0.5", runtime: @runtime},
       {:dialyxir, "~> 1.1", only: [:dev, :test], runtime: false},
-      {:esbuild,
-       github: "phoenixframework/esbuild", runtime: Mix.env() in [:dev, :test], override: true},
+      {:esbuild, "~> 0.5", runtime: @runtime},
       {:ex_doc, "~> 0.28", only: :dev, runtime: false},
       {:floki, ">= 0.32.1"},
       {:jason, "~> 1.3"},
