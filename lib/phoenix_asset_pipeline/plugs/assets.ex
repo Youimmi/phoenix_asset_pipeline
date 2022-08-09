@@ -8,9 +8,9 @@ defmodule PhoenixAssetPipeline.Plugs.Assets do
   alias Plug.Conn
   alias PhoenixAssetPipeline.{Helpers, Storage, Utils}
 
+  @allowed_methods ~w(GET HEAD)
   @behaviour Plug
   @on_load :preload
-  @allowed_methods ~w(GET HEAD)
   @pattern ~r/((?<name>.*)-)?(?<digest>.{32})\.(?<extname>.+)$/
 
   @impl true

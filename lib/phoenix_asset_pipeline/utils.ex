@@ -15,16 +15,22 @@ defmodule PhoenixAssetPipeline.Utils do
   end
 
   def dets_file(module) when is_atom(module) do
-    file_name =
+    dets_file_path(module)
+    |> String.to_charlist()
+  end
+
+  def dets_file_path(module) do
+    path =
       Module.split(module)
       |> Enum.map_join(".", &Macro.underscore/1)
 
     if Code.ensure_loaded?(Mix.Project) do
-      Path.join(Path.dirname(Mix.Project.build_path()), file_name)
+      Mix.Project.build_path()
+      |> Path.dirname()
+      |> Path.join(path)
     else
-      Path.expand("_build/" <> file_name)
+      Path.expand("_build/" <> path)
     end
-    |> String.to_charlist()
   end
 
   def dets_table(file) do
