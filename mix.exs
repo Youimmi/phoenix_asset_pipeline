@@ -2,7 +2,7 @@ defmodule PhoenixAssetPipeline.MixProject do
   use Mix.Project
 
   @description "Asset pipeline for Phoenix app"
-  @runtime Mix.env() in [:dev, :test]
+  @runtimes Mix.env() in [:dev, :test]
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
   @version "0.1.0"
 
@@ -11,7 +11,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       app: :phoenix_asset_pipeline,
       version: @version,
       compilers: Mix.compilers(),
-      elixir: "~> 1.10",
+      elixir: "~> 1.13",
       start_permanent: Mix.env() == :prod,
       description: @description,
       package: package(),
@@ -40,7 +40,7 @@ defmodule PhoenixAssetPipeline.MixProject do
   defp package do
     [
       files: ["lib", "LICENSE", "mix.exs", "README.md"],
-      maintainers: [],
+      maintainers: ["Yuri S."],
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url}
     ]
@@ -50,12 +50,12 @@ defmodule PhoenixAssetPipeline.MixProject do
   defp deps do
     [
       {:brotli, "~> 0.3"},
-      {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
-      {:dart_sass, "~> 0.5", runtime: @runtime},
-      {:dialyxir, "~> 1.1", only: [:dev, :test], runtime: false},
-      {:esbuild, "~> 0.5", runtime: @runtime},
+      {:credo, "~> 1.6", only: :dev, runtime: false},
+      {:dart_sass, "~> 0.5", runtime: @runtimes},
+      {:dialyxir, "~> 1.2", only: :dev, runtime: false},
+      {:esbuild, "~> 0.5", runtime: @runtimes},
       {:ex_doc, "~> 0.28", only: :dev, runtime: false},
-      {:floki, ">= 0.32.1"},
+      {:floki, ">= 0.33.1"},
       {:jason, "~> 1.3"},
       {:phoenix, "~> 1.6"},
       {:phoenix_html, "~> 3.2"},
