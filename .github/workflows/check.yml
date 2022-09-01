@@ -101,8 +101,8 @@ jobs:
       - mix-test
     if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
     env:
-      GITHUB_TOKEN: ${{secrets.ACCESS_TOKEN}}
-      PR_URL: ${{github.event.pull_request.html_url}}
+      GITHUB_TOKEN: ${{ github.token }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
     steps:
       - name: Approve a PR
         run: gh pr review -a "$PR_URL"
