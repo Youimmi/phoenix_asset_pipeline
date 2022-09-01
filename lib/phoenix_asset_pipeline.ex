@@ -8,11 +8,16 @@ defmodule PhoenixAssetPipeline do
 
   @before_compile PhoenixAssetPipeline.Utils
 
-  def start(_type, _args) do
-    upgrade_dispatch()
+  def start(_, _) do
+    case iex_running?() do
+      false ->
+        upgrade_dispatch()
+        Cowboy2Adapter.child_specs(Endpoint, config())
 
-    children = Cowboy2Adapter.child_specs(Endpoint, config())
-    Supervisor.start_link(children, strategy: :one_for_one)
+      _ ->
+        []
+    end
+    |> Supervisor.start_link(strategy: :one_for_one)
   end
 
   defp config do
@@ -26,6 +31,10 @@ defmodule PhoenixAssetPipeline do
       ],
       otp_app: :phoenix_asset_pipeline
     ]
+  end
+
+  defp iex_running? do
+    Code.ensure_loaded?(IEx) and IEx.started?()
   end
 
   # Store the routes in persistent_term. This may give a performance improvement

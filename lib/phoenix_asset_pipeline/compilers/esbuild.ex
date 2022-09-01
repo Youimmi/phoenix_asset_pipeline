@@ -14,9 +14,7 @@ defmodule PhoenixAssetPipeline.Compilers.Esbuild do
   @behaviour Compiler
 
   @impl true
-  def new(path) do
-    compile!(path)
-  end
+  def new(path), do: compile!(path)
 
   @impl true
   def compile!(path) do

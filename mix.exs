@@ -25,16 +25,9 @@ defmodule PhoenixAssetPipeline.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      mod: mod(iex_running?()),
+      mod: {PhoenixAssetPipeline, []},
       extra_applications: [:logger]
     ]
-  end
-
-  defp mod(false), do: {PhoenixAssetPipeline, []}
-  defp mod(_), do: []
-
-  defp iex_running? do
-    Code.ensure_loaded?(IEx) and IEx.started?()
   end
 
   defp package do
@@ -55,11 +48,12 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:dialyxir, "~> 1.2", only: :dev, runtime: false},
       {:esbuild, "~> 0.5", runtime: @runtimes},
       {:ex_doc, "~> 0.28", only: :dev, runtime: false},
-      {:floki, ">= 0.33.1"},
+      {:floki, "~> 0.33"},
       {:jason, "~> 1.3"},
-      {:phoenix, "~> 1.6"},
+      {:phoenix, "~> 1.6", runtime: false},
       {:phoenix_html, "~> 3.2"},
-      {:phoenix_live_view, "~> 0.17", optional: true},
+      {:phoenix_live_view,
+       github: "phoenixframework/phoenix_live_view", override: true, runtime: false},
       {:plug_cowboy, "~> 2.5"}
     ]
   end

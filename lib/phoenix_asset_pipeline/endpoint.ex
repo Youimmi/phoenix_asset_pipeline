@@ -6,9 +6,9 @@ defmodule PhoenixAssetPipeline.Endpoint do
   alias PhoenixAssetPipeline.Plugs.Assets
   alias Plug.SSL
 
-  plug(:ssl)
-  plug(:assets)
-  plug(:not_found)
+  plug :ssl
+  plug :assets
+  plug :not_found
 
   def __handler__(conn, opts) do
     {:plug, conn, __MODULE__, opts}

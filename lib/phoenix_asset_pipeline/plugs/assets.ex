@@ -70,10 +70,6 @@ defmodule PhoenixAssetPipeline.Plugs.Assets do
   defp serve_asset(nil, _, _, conn), do: conn
 
   defp serve_asset(data, extname, encoding, conn) do
-    # range = get_req_header(conn, "range")
-
-    # IO.inspect(conn)
-
     conn
     |> maybe_add_encoding(encoding)
     |> put_resp_header("accept-ranges", "bytes")

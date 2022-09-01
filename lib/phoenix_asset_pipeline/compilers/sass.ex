@@ -16,9 +16,7 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
   # @sourse_map Application.compile_env(:phoenix_asset_pipeline, :sourse_map, true)
 
   @impl true
-  def new(path) do
-    compile!(path)
-  end
+  def new(path), do: compile!(path)
 
   @impl true
   def compile!(path) do
