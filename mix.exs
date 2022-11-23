@@ -47,14 +47,13 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:dart_sass, "~> 0.5", runtime: @runtimes},
       {:dialyxir, "~> 1.2", only: :dev, runtime: false},
       {:esbuild, "~> 0.5", runtime: @runtimes},
-      {:ex_doc, "~> 0.28", only: :dev, runtime: false},
-      {:floki, "~> 0.33"},
+      {:ex_doc, "~> 0.29", only: :dev, runtime: false},
+      {:floki, "~> 0.34"},
       {:jason, "~> 1.3"},
-      {:phoenix, "~> 1.6", runtime: false},
+      {:phoenix, "~> 1.7.0-rc.0", override: true, runtime: false},
       {:phoenix_html, "~> 3.2"},
-      {:phoenix_live_view,
-       github: "phoenixframework/phoenix_live_view", override: true, runtime: false},
-      {:plug_cowboy, "~> 2.5"}
+      {:phoenix_live_view, "~> 0.18.3", override: true, runtime: false},
+      {:plug_cowboy, "~> 2.6"}
     ]
   end
 
