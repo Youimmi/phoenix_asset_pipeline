@@ -49,12 +49,12 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:esbuild, "~> 0.5", runtime: @runtimes},
       {:ex_doc, "~> 0.29", only: :dev, runtime: false},
       {:floki, "~> 0.34"},
-      {:jason, "~> 1.5.0-alpha.1", override: true},
+      {:jason, "~> 1.5.0-alpha.1"},
       {:jason_native, "~> 0.1.0"},
       {:mix_audit, "~> 2.1", only: @runtimes, runtime: false},
       {:phoenix, "~> 1.7.0-rc.2", override: true, runtime: false},
       {:phoenix_html, "~> 3.2"},
-      {:phoenix_live_view, "~> 0.18.11", override: true, runtime: false},
+      {:phoenix_live_view, "~> 0.18.11", runtime: false},
       {:plug_cowboy, "~> 2.6"}
     ]
   end
