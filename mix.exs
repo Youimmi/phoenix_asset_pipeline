@@ -51,7 +51,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:floki, "~> 0.34"},
       {:jason, "~> 1.5.0-alpha.1", override: true},
       {:jason_native, "~> 0.1.0"},
-      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
+      {:mix_audit, "~> 2.1", only: @runtimes, runtime: false},
       {:phoenix, "~> 1.7.0-rc.2", override: true, runtime: false},
       {:phoenix_html, "~> 3.2"},
       {:phoenix_live_view, "~> 0.18.11", override: true, runtime: false},
