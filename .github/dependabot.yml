@@ -6,7 +6,7 @@
 version: 2
 enable-beta-ecosystems: true
 updates:
-  - package-ecosystem: "mix" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  - package-ecosystem: "mix"
+    directory: "/"
     schedule:
       interval: "weekly"
