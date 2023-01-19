@@ -4,8 +4,8 @@ defmodule PhoenixAssetPipeline do
   """
 
   alias Phoenix.Endpoint.Cowboy2Adapter
+  alias PhoenixAssetPipeline.Endpoint
   alias Plug.Cowboy.Handler
-  alias __MODULE__.Endpoint
 
   @before_compile PhoenixAssetPipeline.Utils
 
@@ -35,7 +35,10 @@ defmodule PhoenixAssetPipeline do
   end
 
   defp iex_running? do
-    Code.ensure_loaded?(IEx) and IEx.started?()
+    case Application.get_env(:phoenix_asset_pipeline, :server) do
+      false -> true
+      _ -> Code.ensure_loaded?(IEx) and IEx.started?()
+    end
   end
 
   # Store the routes in persistent_term. This may give a performance improvement

@@ -4,20 +4,20 @@ defmodule PhoenixAssetPipeline.MixProject do
   @description "Asset pipeline for Phoenix app"
   @runtimes Mix.env() in [:dev, :test]
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
-  @version "0.1.0"
+  @version "0.1.1"
 
   def project do
     [
       app: :phoenix_asset_pipeline,
       version: @version,
       compilers: Mix.compilers(),
-      elixir: "~> 1.13",
+      elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
       description: @description,
       package: package(),
       deps: deps(),
       aliases: aliases(),
-      dialyzer: [plt_add_apps: [:mix, :phoenix_live_view]],
+      dialyzer: [plt_add_apps: [:iex, :mix, :phoenix_live_view]],
       source_url: @source_url
     ]
   end
@@ -49,10 +49,11 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:esbuild, "~> 0.5", runtime: @runtimes},
       {:ex_doc, "~> 0.29", only: :dev, runtime: false},
       {:floki, "~> 0.34"},
-      {:jason, "~> 1.3"},
-      {:phoenix, "~> 1.7.0-rc.0", override: true, runtime: false},
+      {:jason, "~> 1.5.0-alpha.1", override: true},
+      {:jason_native, "~> 0.1.0"},
+      {:phoenix, "~> 1.7.0-rc.2", override: true, runtime: false},
       {:phoenix_html, "~> 3.2"},
-      {:phoenix_live_view, "~> 0.18.3", override: true, runtime: false},
+      {:phoenix_live_view, "~> 0.18.11", override: true, runtime: false},
       {:plug_cowboy, "~> 2.6"}
     ]
   end
