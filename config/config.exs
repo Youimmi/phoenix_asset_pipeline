@@ -7,8 +7,8 @@
 # General application configuration
 import Config
 
-config :dart_sass, :version, "1.57.1"
-config :esbuild, :version, "0.17.3"
+config :dart_sass, :version, "1.58.0"
+config :esbuild, :version, "0.17.5"
 config :phoenix, :json_library, Jason
 config :phoenix_asset_pipeline, :assets_path, "priv"
 config :phoenix_asset_pipeline, :server, false

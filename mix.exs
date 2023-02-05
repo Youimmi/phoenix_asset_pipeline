@@ -46,7 +46,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:credo, "~> 1.6", only: :dev, runtime: false},
       {:dart_sass, "~> 0.5", runtime: @runtimes},
       {:dialyxir, "~> 1.2", only: :dev, runtime: false},
-      {:esbuild, "~> 0.5", runtime: @runtimes},
+      {:esbuild, "~> 0.6", runtime: @runtimes},
       {:ex_doc, "~> 0.29", only: :dev, runtime: false},
       {:floki, "~> 0.34"},
       {:jason, "~> 1.5.0-alpha.1"},
