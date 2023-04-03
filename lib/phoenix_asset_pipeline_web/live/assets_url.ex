@@ -1,4 +1,4 @@
-defmodule PhoenixAssetPipeline.Live.AssetsURL do
+defmodule PhoenixAssetPipelineWeb.Live.AssetsURL do
   @moduledoc false
 
   import Phoenix.Component, only: [assign_new: 3]

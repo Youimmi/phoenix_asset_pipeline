@@ -1,4 +1,4 @@
-defmodule PhoenixAssetPipeline.Plugs.Helpers do
+defmodule PhoenixAssetPipelineWeb.Plugs.Helpers do
   @moduledoc false
 
   import PhoenixAssetPipeline.Helpers

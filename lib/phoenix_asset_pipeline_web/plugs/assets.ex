@@ -1,4 +1,4 @@
-defmodule PhoenixAssetPipeline.Plugs.Assets do
+defmodule PhoenixAssetPipelineWeb.Plugs.Assets do
   @moduledoc false
 
   import Plug.Conn
@@ -20,7 +20,7 @@ defmodule PhoenixAssetPipeline.Plugs.Assets do
   def call(%Conn{method: method, path_info: segments} = conn, _)
       when method in @allowed_methods do
     case Regex.named_captures(@pattern, Enum.map_join(segments, "/", &URI.decode/1)) do
-      %{"extname" => extname, "digest" => digest, "name" => name} ->
+      %{"digest" => digest, "extname" => extname, "name" => name} ->
         encoding =
           get_req_header(conn, "accept-encoding")
           |> fetch_encoding()
@@ -37,7 +37,21 @@ defmodule PhoenixAssetPipeline.Plugs.Assets do
 
   def call(conn, _), do: conn
 
-  def preload do
+  defp brotli_requested?(accept) do
+    Plug.Conn.Utils.list(accept)
+    |> Enum.any?(&String.contains?(&1, ["br", "*"]))
+  end
+
+  defp fetch_encoding([accept]) when is_binary(accept) do
+    if brotli_requested?(accept), do: ".br", else: ""
+  end
+
+  defp fetch_encoding(_), do: ""
+
+  defp maybe_add_encoding(conn, ".br"), do: put_resp_header(conn, "content-encoding", "br")
+  defp maybe_add_encoding(conn, _), do: conn
+
+  defp preload do
     dets_file = Utils.dets_file(Helpers)
 
     keys =
@@ -52,20 +66,6 @@ defmodule PhoenixAssetPipeline.Plugs.Assets do
 
     :ok
   end
-
-  defp brotli_requested?(accept) do
-    Plug.Conn.Utils.list(accept)
-    |> Enum.any?(&String.contains?(&1, ["br", "*"]))
-  end
-
-  defp fetch_encoding([accept]) when is_binary(accept) do
-    if brotli_requested?(accept), do: ".br", else: ""
-  end
-
-  defp fetch_encoding(_), do: ""
-
-  defp maybe_add_encoding(conn, ".br"), do: put_resp_header(conn, "content-encoding", "br")
-  defp maybe_add_encoding(conn, _), do: conn
 
   defp serve_asset(nil, _, _, conn), do: conn
 

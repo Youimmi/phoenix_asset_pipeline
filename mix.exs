@@ -4,7 +4,7 @@ defmodule PhoenixAssetPipeline.MixProject do
   @description "Asset pipeline for Phoenix app"
   @runtimes Mix.env() in [:dev, :test]
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
-  @version "0.1.1"
+  @version "0.1.2"
 
   def project do
     [
@@ -25,7 +25,7 @@ defmodule PhoenixAssetPipeline.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      mod: {PhoenixAssetPipeline, []},
+      mod: {PhoenixAssetPipeline.Application, []},
       extra_applications: [:logger]
     ]
   end
@@ -42,20 +42,20 @@ defmodule PhoenixAssetPipeline.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:bandit, github: "mtrudel/bandit", override: true},
       {:brotli, "~> 0.3"},
-      {:credo, "~> 1.6", only: :dev, runtime: false},
+      {:credo, "~> 1.7", only: :dev, runtime: false},
       {:dart_sass, "~> 0.5", runtime: @runtimes},
       {:dialyxir, "~> 1.2", only: :dev, runtime: false},
-      {:esbuild, "~> 0.6", runtime: @runtimes},
+      {:esbuild, "~> 0.7", runtime: @runtimes},
       {:ex_doc, "~> 0.29", only: :dev, runtime: false},
       {:floki, "~> 0.34"},
       {:jason, "~> 1.5.0-alpha.1"},
       {:jason_native, "~> 0.1.0"},
       {:mix_audit, "~> 2.1", only: @runtimes, runtime: false},
-      {:phoenix, "~> 1.7.0-rc.2", override: true, runtime: false},
-      {:phoenix_html, "~> 3.2"},
-      {:phoenix_live_view, "~> 0.18.11", runtime: false},
-      {:plug_cowboy, "~> 2.6"}
+      {:phoenix, "~> 1.7.2", runtime: false},
+      {:phoenix_html, "~> 3.3"},
+      {:phoenix_live_view, "~> 0.18", runtime: false}
     ]
   end
 
@@ -67,8 +67,15 @@ defmodule PhoenixAssetPipeline.MixProject do
   # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
-      setup: ["deps.get"],
-      upgrade: ["cmd rm -rf _build deps mix.lock", "setup"]
+      pre_commit: [
+        "credo -A",
+        "deps.audit",
+        "dialyzer",
+        "format --check-formatted --dry-run",
+        "hex.outdated"
+      ],
+      setup: ["cmd rm -rf _build deps", "deps.get"],
+      upgrade: ["cmd rm -rf mix.lock", "setup"]
     ]
   end
 end
