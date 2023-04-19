@@ -43,9 +43,7 @@ defmodule PhoenixAssetPipeline.Utils do
   end
 
   def install_sass do
-    unless path_exists?(DartSass.bin_path()) do
-      DartSass.install()
-    end
+    paths_exist?(DartSass.bin_paths()) || DartSass.install()
   end
 
   def install_esbuild do
@@ -63,7 +61,7 @@ defmodule PhoenixAssetPipeline.Utils do
     Regex.replace(~r/(\/)*$/, path, "")
   end
 
-  defp path_exists?(path) when is_list(path) do
-    Enum.all?(path, &File.exists?/1)
+  defp paths_exist?(paths) when is_list(paths) do
+    paths |> Enum.all?(&File.exists?/1)
   end
 end

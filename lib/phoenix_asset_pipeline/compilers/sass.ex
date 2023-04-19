@@ -35,7 +35,7 @@ defmodule PhoenixAssetPipeline.Compilers.Sass do
       stderr_to_stdout: true
     ]
 
-    case Utils.cmd(DartSass.bin_path(), args, opts) do
+    case Utils.cmd(DartSass.bin_paths(), args, opts) do
       {css, 0} ->
         css = Obfuscator.obfuscate_css(css)
         {css, Utils.integrity(css)}
