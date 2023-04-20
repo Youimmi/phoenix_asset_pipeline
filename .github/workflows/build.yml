@@ -35,10 +35,11 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('mix.lock') }}
       - run: |
           mix deps.get
-          mix deps.unlock --check-unused
-          mix hex.outdated
+          mix compile --warnings-as-errors
           mix deps.audit
-          mix deps.compile
+          mix deps.unlock --check-unused
+          mix hex.audit
+          mix hex.outdated
           mix dialyzer --plt
         if: steps.mix-cache.outputs.cache-hit != 'true'
 

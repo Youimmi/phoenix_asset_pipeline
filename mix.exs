@@ -4,7 +4,7 @@ defmodule PhoenixAssetPipeline.MixProject do
   @description "Asset pipeline for Phoenix app"
   @runtimes Mix.env() in [:dev, :test]
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
-  @version "0.1.2"
+  @version "0.1.3"
 
   def project do
     [
@@ -52,10 +52,10 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:floki, "~> 0.34"},
       {:jason, "~> 1.5.0-alpha.1"},
       {:jason_native, "~> 0.1.0"},
-      {:mix_audit, "~> 2.1", only: @runtimes, runtime: false},
+      {:mix_audit, "~> 2.1", only: :dev, runtime: false},
       {:phoenix, "~> 1.7.2", runtime: false},
       {:phoenix_html, "~> 3.3"},
-      {:phoenix_live_view, "~> 0.18", runtime: false}
+      {:phoenix_live_view, "~> 0.18", runtime: @runtimes}
     ]
   end
 
@@ -68,10 +68,12 @@ defmodule PhoenixAssetPipeline.MixProject do
   defp aliases do
     [
       pre_commit: [
+        "compile --force --warnings-as-errors",
         "credo -A",
         "deps.audit",
         "dialyzer",
         "format --check-formatted --dry-run",
+        "hex.audit",
         "hex.outdated"
       ],
       setup: ["cmd rm -rf _build deps", "deps.get"],
