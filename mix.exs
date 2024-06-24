@@ -42,7 +42,7 @@ defmodule PhoenixAssetPipeline.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:bandit, "~> 0.7.7", override: true},
+      {:bandit, "~> 1.5.5", override: true},
       {:brotli, "~> 0.3"},
       {:credo, "~> 1.7", only: :dev, runtime: false},
       {:dart_sass, "~> 0.6", runtime: @runtimes},
