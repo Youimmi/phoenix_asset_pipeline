@@ -1,44 +1,45 @@
-defmodule PhoenixAssetPipelineWeb.Plugs.Assets do
+defmodule PhoenixAssetPipeline.Plug.Assets do
   @moduledoc false
 
   import Plug.Conn
 
-  require PhoenixAssetPipeline.Utils
-
   alias Plug.Conn
-  alias PhoenixAssetPipeline.{Helpers, Storage, Utils}
 
   @allowed_methods ~w(GET HEAD)
   @behaviour Plug
-  @on_load :preload
-  @pattern ~r/((?<name>.*)-)?(?<digest>.{32})\.(?<extname>.+)$/
+  @pattern ~r/(?<digest>.{32})\.(?<format>.+)$/
 
   @impl true
   def init(opts), do: opts
 
   @impl true
-  def call(%Conn{method: method, path_info: segments} = conn, _)
-      when method in @allowed_methods do
+  def call(%Conn{method: meth, path_info: segments} = conn, _)
+      when meth in @allowed_methods do
     case Regex.named_captures(@pattern, Enum.map_join(segments, "/", &URI.decode/1)) do
-      %{"digest" => digest, "extname" => extname, "name" => name} ->
+      %{"digest" => digest, "format" => format} ->
         encoding =
           get_req_header(conn, "accept-encoding")
           |> fetch_encoding()
 
-        extname = Path.rootname(extname)
+        extname = "." <> format <> encoding
 
-        Storage.get({"." <> extname <> encoding, name, digest})
-        |> serve_asset(extname, encoding, conn)
+        :persistent_term.get({:phoenix_asset_pipeline, :assets}, [])
+        |> Enum.find_value(fn
+          {^extname, ^digest, content} -> content
+          _ -> nil
+        end)
+        |> serve_asset(format, encoding, conn)
 
       _ ->
         conn
     end
   end
 
+  @impl true
   def call(conn, _), do: conn
 
   defp brotli_requested?(accept) do
-    Plug.Conn.Utils.list(accept)
+    Conn.Utils.list(accept)
     |> Enum.any?(&String.contains?(&1, ["br", "*"]))
   end
 
@@ -49,23 +50,8 @@ defmodule PhoenixAssetPipelineWeb.Plugs.Assets do
   defp fetch_encoding(_), do: ""
 
   defp maybe_add_encoding(conn, ".br"), do: put_resp_header(conn, "content-encoding", "br")
+  defp maybe_add_encoding(conn, ".zstd"), do: put_resp_header(conn, "content-encoding", "zstd")
   defp maybe_add_encoding(conn, _), do: conn
-
-  defp preload do
-    dets_file = Utils.dets_file(Helpers)
-
-    keys =
-      Utils.dets_table(dets_file)
-      |> :dets.match({{:"$1", :"$2", :"$3"}, :"$4"})
-
-    :dets.close(dets_file)
-
-    for [extname, name, digest, content] <- keys do
-      Storage.put({extname, name, digest}, content)
-    end
-
-    :ok
-  end
 
   defp serve_asset(nil, _, _, conn), do: conn
 

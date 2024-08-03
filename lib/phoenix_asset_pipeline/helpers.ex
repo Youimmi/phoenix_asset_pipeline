@@ -1,207 +1,213 @@
 defmodule PhoenixAssetPipeline.Helpers do
   @moduledoc false
 
-  import Phoenix.HTML.Tag
-  import PhoenixAssetPipeline.Utils
+  import Phoenix.HTML, only: [attributes_escape: 1]
+  import PhoenixAssetPipeline.Obfuscator, only: [obfuscate: 1, valid?: 1]
 
-  alias PhoenixAssetPipeline.Compilers.{Esbuild, Sass}
-  alias PhoenixAssetPipeline.{Config, Obfuscator, Storage}
-  alias Plug.Conn
+  alias PhoenixAssetPipeline.Compiler.CompileError
+  alias PhoenixAssetPipeline.Compiler.Esbuild
+  alias PhoenixAssetPipeline.Compiler.Sass
+  alias PhoenixAssetPipeline.Compiler.Tailwind
 
-  defmacro __using__(_) do
-    dets_file(__MODULE__)
-    |> File.rm()
+  @before_compile PhoenixAssetPipeline.Utils
+  @endpoint PhoenixAssetPipeline.Endpoint
+  @persistent_term {:phoenix_asset_pipeline, :assets}
 
-    quote do
-      import PhoenixAssetPipeline.Helpers
-      import PhoenixAssetPipeline.Obfuscator
+  import PhoenixAssetPipeline.Utils,
+    only: [
+      application_started?: 0,
+      dets_file: 1,
+      dets_table: 1,
+      digest: 1
+    ]
 
-      if Code.ensure_loaded?(Mix.Project) and application_started?() do
-        root = File.cwd!()
+  def compile_error!(module, msg) do
+    dets_file = dets_file(__MODULE__)
+    table = dets_table(dets_file)
 
-        glob = [
-          Path.join([root, Config.css_path(), "**/*.{css,sass,scss}"]),
-          Path.join([root, Config.img_path(), "**/*"]),
-          Path.join([root, Config.js_path(), "**/*.{cjs,js,mjs,ts}"])
-        ]
+    :dets.insert_new(table, {:recompile, true})
+    :dets.close(dets_file)
 
-        for paths <- glob, path <- Path.wildcard(paths) do
-          @external_resource path
-        end
-      else
-        def __mix_recompile__?, do: true
+    if not application_started?(), do: raise(module, msg)
+    quote do: raise(unquote(module), unquote(msg))
+  end
+
+  def sorted_attrs(attrs) when is_list(attrs) do
+    attrs
+    |> Enum.sort()
+    |> attributes_escape()
+    |> elem(1)
+  end
+
+  def __mix_recompile__? do
+    dets_file = dets_file(__MODULE__)
+    table = dets_table(dets_file)
+
+    recompile =
+      case :dets.lookup(table, :recompile) do
+        [recompile: true] -> true
+        _ -> false
       end
-    end
+
+    :dets.close(dets_file)
+    File.rm(dets_file)
+
+    recompile
+  end
+
+  defp assets(extname, digest, data) do
+    {:ok, br_data} = :brotli.encode(data)
+    br_extname = extname <> ".br"
+    zstd_data = :ezstd.compress(data)
+    zstd_extname = extname <> ".zstd"
+
+    [
+      {extname, digest, data},
+      {br_extname, digest, br_data},
+      {zstd_extname, digest, zstd_data}
+    ]
+  end
+
+  defp put_integrity(opts, hash) do
+    Keyword.put_new(opts, :integrity, "sha512-" <> hash)
+  end
+
+  defp put_track_static(opts) do
+    Keyword.put_new(opts, :phx_track_static, true)
   end
 
   defmacro class(_, _ \\ [])
 
-  defmacro class(name, opts) when is_binary(name) do
-    classes =
-      Enum.reduce(String.split(name), "", fn class_name, classes ->
-        classes <> " " <> Obfuscator.obfuscate(class_name)
-      end)
-      |> String.trim_leading()
+  defmacro class(class_names, opts) when is_binary(class_names) do
+    with [_ | [_ | _]] <- String.split(class_names, ~r/\s+/) do
+      compile_error!(
+        ArgumentError,
+        "Pass multiple class names as a list: #{inspect(class_names)}"
+      )
+    end
 
-    Keyword.put(opts, :class, classes)
+    quote do: class([unquote(class_names)], unquote(opts))
   end
 
-  defmacro class(_, opts), do: opts
+  defmacro class(class_names, opts) when is_list(class_names) and is_list(opts) do
+    result =
+      Enum.reduce_while(class_names, [], fn class_name, class ->
+        if valid?(class_name),
+          do: {:cont, [obfuscate(class_name) | class]},
+          else: {:halt, {:error, class_name}}
+      end)
 
-  defmacro image_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
-    {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
-    {digest, extname, fragment, integrity} = cache_image(path, name)
+    case result do
+      {:error, class_name} ->
+        compile_error!(ArgumentError, "Invalid class name: #{inspect(class_name)}")
 
-    {srcset, opts} =
-      case Keyword.pop(opts, :srcset) do
-        {nil, opts} -> {nil, opts}
-        {srcset, opts} -> {srcset(srcset), opts}
-      end
+      class when is_list(class) ->
+        duplicates = class -- Enum.uniq(class)
 
-    quote bind_quoted: [
-            digest: digest,
-            extname: extname,
-            fragment: fragment,
-            hostname: hostname,
-            name: name,
-            opts: put_integrity(integrity, opts),
-            srcset: srcset
-          ] do
-      opts =
-        base_url(hostname)
-        |> src(name, digest, extname)
-        |> maybe_add_fragment(fragment)
-        |> put_src(opts)
-        |> put_srcset(hostname, srcset)
-
-      tag(:img, opts)
+        if Enum.empty?(duplicates),
+          do: Keyword.put(opts, :class, Enum.sort(class)),
+          else: compile_error!(ArgumentError, "Remove duplicate classes: #{inspect(class_names)}")
     end
   end
 
-  defmacro script_tag(hostname, path, opts \\ []) when is_binary(path) and is_list(opts) do
-    {name, opts} = Keyword.pop(opts, :name, Path.rootname(path))
+  # defmacro img(_path, opts) do
+  #   # {_digest, _extname, _fragment, integrity} = {"", "", "", ""}
+
+  #   # attrs =
+  #   #   opts
+  #   #   |> put_integrity(integrity)
+
+  #   # {:safe, [?<, :img, sorted_attrs(attrs), ?>]}
+  #   ""
+  # end
+
+  defmacro script(path, opts \\ []) when is_list(opts) do
     {content, integrity} = Esbuild.new(path)
+
     digest = digest(content)
+    extname = ".js"
+    name = Path.rootname(path)
 
-    cache(".js", name, digest, content)
+    src_path =
+      if Mix.env() == :prod,
+        do: "/#{digest}#{extname}",
+        else: "/#{name}-#{digest}#{extname}"
 
-    quote bind_quoted: [
-            digest: digest,
-            hostname: hostname,
-            name: name,
-            opts: put_integrity(integrity, opts)
-          ] do
-      opts =
-        base_url(hostname)
-        |> src(name, digest, ".js")
-        |> put_src(opts)
+    attrs =
+      opts
+      |> put_integrity(integrity)
+      |> put_track_static()
 
-      content_tag(:script, nil, opts)
+    assets = assets(extname, digest, content)
+
+    for {extname, digest, content} <- assets do
+      :persistent_term.put(@persistent_term, [{extname, digest, content} | assets])
+    end
+
+    quote do
+      attrs =
+        unquote(attrs)
+        |> Keyword.put(:src, unquote(@endpoint).url() <> unquote(src_path))
+        |> sorted_attrs()
+
+      {:safe, [?<, "script", attrs, ?>, ?<, ?/, "script", ?>]}
     end
   end
 
-  defmacro style_tag(path, opts \\ []) when is_binary(path) and is_list(opts) do
-    {css, integrity} = Sass.new(path)
-    content_tag(:style, {:safe, css}, put_integrity(integrity, opts))
-  end
+  defmacro style(path, opts \\ []) when is_list(opts) do
+    case Sass.new(path) do
+      {:error, msg} ->
+        compile_error!(CompileError, msg)
 
-  def base_url(hostname) when is_binary(hostname) do
-    normalize(hostname)
-  end
+      {content, integrity} ->
+        File.rm(dets_file(__MODULE__))
 
-  def base_url(%Conn{} = conn) do
-    assets_url = Application.get_env(:phoenix_asset_pipeline, :assets_url)
-    port = Application.get_env(:phoenix_asset_pipeline, :port, 4001)
+        attrs =
+          opts
+          |> put_integrity(integrity)
+          |> sorted_attrs()
 
-    base_url(assets_url || "#{conn.scheme}://#{conn.host}:#{port}")
-  end
-
-  def maybe_add_fragment(url, fragment) when is_binary(fragment) and byte_size(fragment) > 0 do
-    url <> "#" <> fragment
-  end
-
-  def maybe_add_fragment(url, _), do: url
-
-  def put_src(url, opts) when is_binary(url) and is_list(opts) do
-    Keyword.put_new(opts, :src, url)
-  end
-
-  def put_srcset(opts, _, srcset) when is_binary(srcset) and byte_size(srcset) > 0 do
-    Keyword.put_new(opts, :srcset, srcset)
-  end
-
-  def put_srcset(opts, hostname, srcset) when is_list(srcset) and length(srcset) > 0 do
-    srcset =
-      Enum.map_join(srcset, ", ", fn
-        [extname, name, digest, fragment, descriptor, _] ->
-          src =
-            base_url(hostname)
-            |> src(name, digest, extname)
-            |> maybe_add_fragment(fragment)
-
-          src <> " " <> descriptor
-      end)
-
-    put_srcset(opts, hostname, srcset)
-  end
-
-  def put_srcset(opts, _, _), do: opts
-
-  def src(url, name, digest, extname) do
-    "#{url}/#{name(name)}#{digest}#{extname}"
-  end
-
-  defp cache(extname, name, digest, content) do
-    {:ok, br_data} = :brotli.encode(content)
-    br_extname = extname <> ".br"
-    dets_file = dets_file(__MODULE__)
-    table = dets_table(dets_file)
-
-    with false <- :dets.member(table, {extname, name, digest}) do
-      :dets.insert(table, {{extname, name, digest}, content})
-      :dets.insert(table, {{br_extname, name, digest}, br_data})
-      :dets.close(dets_file)
-
-      Storage.put({extname, name, digest}, content)
-      Storage.put({br_extname, name, digest}, br_data)
+        {:safe, [?<, "style", attrs, ?>, content, ?<, ?/, "style", ?>]}
     end
   end
 
-  defp cache_image(path, name) when is_binary(path) do
-    %{fragment: fragment, path: file_path} = URI.parse(path)
-    file_path = Path.join([File.cwd!(), Config.img_path(), file_path])
-    extname = Path.extname(file_path)
-    content = File.read!(file_path)
-    digest = digest(content)
-    integrity = integrity(content)
+  defmacro tailwind(path, opts \\ []) when is_list(opts) do
+    case Tailwind.new(path) do
+      {:error, msg} ->
+        compile_error!(CompileError, msg)
 
-    cache(extname, Path.rootname(name || path), digest, content)
+      {content, integrity} ->
+        File.rm(dets_file(__MODULE__))
 
-    {digest, extname, fragment, integrity}
+        attrs =
+          opts
+          |> put_integrity(integrity)
+          |> sorted_attrs()
+
+        {:safe, [?<, "style", attrs, ?>, content, ?<, ?/, "style", ?>]}
+    end
   end
 
-  defp name(""), do: ""
-  defp name(name) when is_binary(name), do: name <> "-"
+  defmacro __using__(_) do
+    :persistent_term.erase({:phoenix_asset_pipeline, :classes})
 
-  defp put_integrity(hash, opts) when is_binary(hash) and is_list(opts) do
-    Keyword.put_new(opts, :integrity, "sha512-" <> hash)
+    quote do
+      import PhoenixAssetPipeline.Utils, only: [assets_paths: 0]
+      import PhoenixAssetPipeline.Helpers
+
+      @before_compile PhoenixAssetPipeline.Helpers
+
+      for path <- assets_paths(), do: @external_resource(path)
+    end
   end
 
-  defp put_integrity(_, opts), do: opts
+  defmacro __before_compile__(_) do
+    assets = :persistent_term.get(@persistent_term, []) |> Macro.escape()
 
-  defp srcset(srcset) when is_map(srcset) or is_list(srcset) do
-    Enum.map(srcset, &srcset_src(&1))
-  end
+    quote do
+      @on_load :on_load
 
-  defp srcset(srcset), do: srcset
-
-  defp srcset_src({{path, name}, descriptor}) when is_binary(path) do
-    {digest, extname, fragment, integrity} = cache_image(path, name)
-    [extname, name, digest, fragment, descriptor, integrity]
-  end
-
-  defp srcset_src({path, descriptor}) when is_binary(path) do
-    {digest, extname, fragment, integrity} = cache_image(path, nil)
-    [extname, Path.rootname(path), digest, fragment, descriptor, integrity]
+      defp on_load, do: :persistent_term.put(unquote(@persistent_term), unquote(assets))
+    end
   end
 end

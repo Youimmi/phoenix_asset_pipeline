@@ -2,33 +2,8 @@ defmodule PhoenixAssetPipeline.MixProject do
   use Mix.Project
 
   @description "Asset pipeline for Phoenix app"
-  @runtimes Mix.env() in [:dev, :test]
+  @dev_opts [only: :dev, runtime: false]
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
-  @version "0.1.3"
-
-  def project do
-    [
-      app: :phoenix_asset_pipeline,
-      version: @version,
-      compilers: Mix.compilers(),
-      elixir: "~> 1.14",
-      start_permanent: Mix.env() == :prod,
-      description: @description,
-      package: package(),
-      deps: deps(),
-      aliases: aliases(),
-      dialyzer: [plt_add_apps: [:iex, :mix, :phoenix_live_view]],
-      source_url: @source_url
-    ]
-  end
-
-  # Run "mix help compile.app" to learn about applications.
-  def application do
-    [
-      mod: {PhoenixAssetPipeline.Application, []},
-      extra_applications: [:logger]
-    ]
-  end
 
   defp package do
     [
@@ -39,23 +14,48 @@ defmodule PhoenixAssetPipeline.MixProject do
     ]
   end
 
+  def project do
+    [
+      aliases: aliases(),
+      app: :phoenix_asset_pipeline,
+      deps: deps(),
+      description: @description,
+      dialyzer: [plt_add_apps: [:iex, :mix]],
+      elixir: "~> 1.11",
+      package: package(),
+      source_url: @source_url,
+      start_permanent: Mix.env() == :prod,
+      version: "0.2.0"
+    ]
+  end
+
+  # Run "mix help compile.app" to learn about applications.
+  def application do
+    [
+      mod: {PhoenixAssetPipeline, []},
+      registered: [PhoenixAssetPipeline.Supervisor]
+    ]
+  end
+
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:bandit, "~> 0.7.7", override: true},
-      {:brotli, "~> 0.3"},
-      {:credo, "~> 1.7", only: :dev, runtime: false},
-      {:dart_sass, "~> 0.6", runtime: @runtimes},
-      {:dialyxir, "~> 1.3", only: :dev, runtime: false},
-      {:esbuild, "~> 0.7", runtime: @runtimes},
-      {:ex_doc, "~> 0.29", only: :dev, runtime: false},
-      {:floki, "~> 0.34"},
-      {:jason, "~> 1.5.0-alpha.1"},
-      {:jason_native, "~> 0.1.0"},
-      {:mix_audit, "~> 2.1", only: :dev, runtime: false},
-      {:phoenix, "~> 1.7.2", runtime: false},
-      {:phoenix_html, "~> 3.3"},
-      {:phoenix_live_view, "~> 0.18", runtime: @runtimes}
+      {:bandit, "~> 1.5", optional: true},
+      {:brotli, "~> 0.3.2"},
+      {:credo, "~> 1.7", @dev_opts},
+      {:dart_sass, "~> 0.7", runtime: false},
+      {:dialyxir, "~> 1.4", @dev_opts},
+      {:esbuild, "~> 0.8", runtime: false},
+      {:ex_doc, ">= 0.0.0", @dev_opts},
+      {:ezstd, "~> 1.1.0"},
+      {:floki, ">= 0.36.2"},
+      {:git_hooks, "~> 0.8.0-pre0", @dev_opts},
+      {:mix_audit, "~> 2.1", @dev_opts},
+      {:phoenix, "~> 1.7.14", optional: true},
+      {:phoenix_html, "~> 4.1.1"},
+      {:sobelow, "~> 0.13", @dev_opts},
+      {:styler, "~> 1.0.0-rc.2", @dev_opts},
+      {:tailwind, "~> 0.2", runtime: false}
     ]
   end
 
@@ -67,14 +67,17 @@ defmodule PhoenixAssetPipeline.MixProject do
   # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
-      pre_commit: [
-        "compile --force --warnings-as-errors",
-        "credo -A",
-        "deps.audit",
-        "dialyzer",
-        "format --check-formatted --dry-run",
+      lint: [
+        "deps.get",
         "hex.audit",
-        "hex.outdated"
+        "hex.outdated",
+        "deps.audit",
+        "deps.unlock --check-unused",
+        "compile --warnings-as-errors",
+        "format --check-formatted --dry-run",
+        "credo -A",
+        "dialyzer",
+        "sobelow --strict"
       ],
       setup: ["cmd rm -rf _build deps", "deps.get"],
       upgrade: ["cmd rm -rf mix.lock", "setup"]
