@@ -66,7 +66,7 @@ defmodule PhoenixAssetPipeline do
     conn
     |> put_resp_header(
       "content-security-policy",
-      "default-src 'self'; script-src #{conn.private.phoenix_static_url} #{Enum.join(script_src, " ")}; style-src 'self' #{Enum.join(style_src, " ")}"
+      "default-src 'self'; script-src 'unsafe-inline' #{conn.private.phoenix_static_url} #{Enum.join(script_src, " ")} 'strict-dynamic'; style-src 'self' #{Enum.join(style_src, " ")}"
     )
   end
 
