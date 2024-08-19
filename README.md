@@ -1,21 +1,160 @@
 # PhoenixAssetPipeline
+
 Asset pipeline for Phoenix app
 
-[![CI](https://github.com/Youimmi/phoenix_asset_pipeline/workflows/CI/badge.svg?branch=main&event=push)](https://github.com/Youimmi/phoenix_asset_pipeline) [![hex.pm version](https://img.shields.io/hexpm/v/phoenix_asset_pipeline.svg)](https://hex.pm/packages/phoenix_asset_pipeline)
+Serve assets and static files from memory
+
+[![Hex.pm](https://img.shields.io/hexpm/v/phoenix_asset_pipeline.svg)](https://hex.pm/packages/phoenix_asset_pipeline) [![Documentation](https://img.shields.io/badge/documentation-gray)](https://hexdocs.pm/phoenix_asset_pipeline/api-reference.html)
+
+## Features
+
+### Common
+
+- **class**, **script**, **syle** and **tailwind** HTML helpers
+- HTML class names obfuscation
+- JSON parser, based on Erlang/OTP 27.0
+- Pre-compiled assets and static files with compressed versions (**brotli**, **deflate** and **gzip**)
+- Add [Subresource Integrity (SRI)](https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity) attributes
+- Define your custom assets domain
+
+### Dev environment
+
+- Add [Sass](https://sass-lang.com) support
+- Add [TypeScript](https://www.typescriptlang.org) support
+- Add [Tailwind CSS](https://tailwindcss.com) support with class names obfuscation
+- **LiveReload** support
+
+### Prod environment
+
+- Minify CSS and JS
+- Minify HTTP response body
+- Add [Content Security Policy (CSP)](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP) directives
+- **Releases** support
+
+## Documentation
+
+API documentation is available at https://hexdocs.pm/phoenix_asset_pipeline/1.0.0-alpha.1/api-reference.html
 
 ## Installation
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `phoenix_asset_pipeline` to your list of dependencies in `mix.exs`:
+Add `phoenix_asset_pipeline` to your list of dependencies in `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:phoenix_asset_pipeline, "~> 0.1.0"}
+    {:phoenix_asset_pipeline, "~> 1.0.0-alpha.1"}
   ]
 end
 ```
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at [https://hexdocs.pm/phoenix_asset_pipeline](https://hexdocs.pm/phoenix_asset_pipeline).
+#### Opional
+
+Requires **Erlang/OTP 27.0** or later
+
+Update your `config/config.exs`:
+
+```elixir
+config :phoenix, :json_library, PhoenixAssetPipeline.Parser.JSON
+```
+
+### Add HTML helpers
+
+Add `use PhoenixAssetPipeline.Helpers` inside **quote** block to `defp html_helpers` in your `lib/my_app_web.ex`:
+
+```elixir
+defp html_helpers do
+  quote do
+    # Add asset pipeline macros (class, script, style and tailwind)
+    use PhoenixAssetPipeline.Helpers # add this line
+
+    # HTML escaping functionality
+    import Phoenix.HTML
+    # Core UI components and translation
+    import MyAppWeb.CoreComponents
+    import MyAppWeb.Gettext
+
+    # Shortcut for generating JS commands
+    alias Phoenix.LiveView.JS
+
+    # Routes generation with the ~p sigil
+    unquote(verified_routes())
+  end
+end
+```
+
+### Add LiveReload
+
+Add the *assets pattern* to your `config/dev.exs`:
+
+```elixir
+config :my_app, MyAppWeb.Endpoint,
+  live_reload: [
+    patterns: [
+      ~r"assets/(css|js)/.*(css|scss|sass|js|ts)$", # add this line
+      ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
+      ~r"priv/gettext/.*(po)$",
+      ~r"lib/my_web/(controllers|live|components)/.*(ex|heex)$"
+    ]
+  ]
+```
+
+### Add plug
+
+Replace **Plug.Static** with **PhoenixAssetPipeline** in your `lib/endpoint.ex`:
+
+```elixir
+
+defmodule MyAppWeb.Endpoint do
+  use Phoenix.Endpoint, otp_app: :my_app
+  use PhoenixAssetPipeline, only: MyAppWeb.static_paths()
+
+  # plug Plug.Static,
+  #   at: "/",
+  #   from: :yui,
+  #   gzip: false,
+  #   only: MyAppWeb.static_paths()
+```
+
+Options https://github.com/Youimmi/phoenix_asset_pipeline/blob/main/lib/phoenix_asset_pipeline/plug.ex
+
+## Configure
+
+You can override the default configuration
+
+`config/config.exs`:
+
+```elixir
+config :dart_sass, "1.77.8"
+config :esbuild, "0.23.0"
+config :tailwind, "3.4.10"
+```
+
+Add `static_url` to your `config/runtime.exs`:
+
+```elixir
+if config_env() == :prod do
+  assets_host = System.get_env("ASSETS_HOST") || "assets.example.com"
+
+  config :my_app, MyAppWeb.Endpoint, static_url: [host: assets_host, port: 443, scheme: "https"]
+```
+
+Read more https://hexdocs.pm/phoenix/Phoenix.Endpoint.html
+
+## Usage
+
+```sh
+mix phx.server
+```
+
+## Release
+
+All assets and static files will be compiled into elixir macors without the **ptiv/static** folder
+
+```sh
+MIX_ENV=prod mix release
+_build/prod/rel/my_app/bin/my_app start
+```
+
+## Copyright and License
+
+**PhoenixAssetPipeline** is released under [the MIT License](./LICENSE)

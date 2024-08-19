@@ -1,45 +1,110 @@
 defmodule PhoenixAssetPipeline.Obfuscator do
-  @moduledoc false
+  @moduledoc """
+  Provides obfuscatation for class names.
+  """
 
-  alias PhoenixAssetPipeline.Utils
+  alias PhoenixAssetPipeline.Storage
 
+  @pattern ~r/(?!\d)([-a-z)([[\]\()-,:#'"\.\w]*)/
+
+  @doc """
+  Obfuscates the class name string by replacing with unique short name.
+
+  ## Examples
+
+      "mt-1"
+      "mt-2"
+
+  ## Output
+
+      "m"
+      "m1"
+  """
   def obfuscate(class_name, count \\ 0) when is_binary(class_name) and is_integer(count) do
-    dets_file = Utils.dets_file(__MODULE__)
-    table = Utils.dets_table(dets_file)
+    classes = Storage.get(:classes, [])
+    short_name = minify(class_name, count)
 
-    short = minify(class_name, count)
-    key = {"class", short}
-
-    short =
-      case :dets.lookup(table, key) do
-        [{{_, short}, value}] ->
-          if value == class_name,
-            do: short,
-            else: inc(class_name, count)
-
-        _ ->
-          if :dets.insert_new(table, {key, class_name}),
-            do: short,
-            else: inc(class_name, count)
-      end
-
-    :dets.close(dets_file)
-    short
+    case Enum.find(classes, fn {s, _} -> s == short_name end) do
+      {^short_name, ^class_name} -> short_name
+      {^short_name, _} -> obfuscate(class_name, count + 1)
+      _ -> store({short_name, class_name}, classes)
+    end
   end
+
+  @doc """
+  Obfuscates the CSS content by replacing the class names with the obfuscated class names.
+  ""
+  ## Examples
+
+      .mt-1 {
+        margin-top: 0.25rem
+      }
+
+  ## Output
+
+      .m {
+        margin-top: 0.25rem
+      }
+  """
+  def obfuscate_css(content) when is_list(content), do: to_string(content) |> obfuscate_css()
 
   def obfuscate_css(content) when is_binary(content) do
-    Regex.replace(~r{\.(?!phx-)(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)}, content, fn _, class_name, _ ->
-      "." <> obfuscate(class_name)
-    end)
+    {css, source_map} = split_css_and_source_map(content)
+    css = String.replace(css, "\\", "")
+
+    Regex.replace(~r/(\.)(?!phx-)#{@pattern.source}(\s*\{)/iu, css, fn
+      _, head, class, tail -> head <> obfuscate(class) <> tail
+    end) <> source_map
   end
 
+  @doc """
+  Obfuscates the JavaScript content by replacing the `obfuscate(<class_name>)` string with the obfuscated class name.
+
+  ## Examples
+
+      Document.getElementsByClassName("obfuscate(my-class)")
+
+  ## Output
+
+      Document.getElementsByClassName("m")
+  """
   def obfuscate_js(content) when is_binary(content) do
-    Regex.replace(~r{obfuscate\((-?[_a-zA-Z]+[_a-zA-Z0-9-]*)\)}, content, fn _, class_name, _ ->
-      obfuscate(class_name)
-    end)
+    {js, source_map} = split_js_and_source_map(content)
+
+    Regex.replace(~r/obfuscate\((?!phx-)#{@pattern.source}\)/iu, js, fn
+      _, head, class, tail -> head <> obfuscate(class) <> tail
+    end) <> source_map
   end
 
-  defp inc(class_name, count), do: obfuscate(class_name, count + 1)
+  @doc """
+  Checks if the class name is valid css class name.
+
+  Read https://www.w3.org/TR/CSS21/syndata.html#characters
+  """
+  def valid?(class) when is_binary(class), do: Regex.match?(~r/^#{@pattern.source}$/iu, class)
+  def valid?(_), do: false
+
+  defp minify("[" <> _, count), do: minify("u", count)
+  defp minify("-" <> _, count), do: minify("u", count)
   defp minify(class_name, 0), do: String.at(class_name, 0)
   defp minify(class_name, count), do: "#{minify(class_name, 0)}#{count}"
+
+  defp split_css_and_source_map(content) do
+    case String.split(content, ~r"/\*# sourceMappingURL=") do
+      [css, source_map] -> {css, "/*# sourceMappingURL=" <> source_map}
+      [css] -> {css, ""}
+    end
+  end
+
+  defp split_js_and_source_map(content) do
+    case String.split(content, ~r"//# sourceMappingURL=") do
+      [js, source_map] -> {js, "//# sourceMappingURL=" <> source_map}
+      [js] -> {js, ""}
+    end
+  end
+
+  defp store({short_name, _} = class, classes) do
+    Storage.put(:classes, [class | classes])
+    short_name
+  end
 end
