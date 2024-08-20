@@ -63,11 +63,16 @@ defmodule PhoenixAssetPipeline do
     script_src = for {".js", integrity} <- integrities, do: fun.(integrity)
     style_src = for {".css", integrity} <- integrities, do: fun.(integrity)
 
-    conn
-    |> put_resp_header(
-      "content-security-policy",
-      "default-src 'self'; script-src 'unsafe-inline' #{conn.private.phoenix_static_url} #{Enum.join(script_src, " ")} 'strict-dynamic'; style-src 'self' #{Enum.join(style_src, " ")}"
-    )
+    directives =
+      [
+        "base-uri 'none'",
+        "default-src 'self'",
+        "script-src 'unsafe-inline' #{conn.private.phoenix_static_url} #{Enum.join(script_src, " ")} 'strict-dynamic'",
+        "style-src 'self' #{Enum.join(style_src, " ")}"
+      ]
+      |> Enum.join("; ")
+
+    put_resp_header(conn, "content-security-policy", directives)
   end
 
   defp minify(%{resp_body: body, resp_headers: [{"content-type", "text/html" <> _} | _]} = conn) do
