@@ -1,6 +1,6 @@
 # PhoenixAssetPipeline
 
-Asset pipeline for Phoenix app
+Asset pipeline for Phoenix applications
 
 Serve assets and static files from memory
 
@@ -14,7 +14,7 @@ Achieve 100/100 scores in [Google PageSpeed ​​Insights](https://pagespeed.we
 
 ### Common
 
-- **class**, **script**, **syle** and **tailwind** HTML helpers
+- **class**, **script**, **obfuscate**, **syle** and **tailwind** HTML helpers
 - HTML class names obfuscation
 - JSON parser, based on Erlang/OTP 27.0
 - Pre-compiled assets and static files with compressed versions (**brotli**, **deflate** and **gzip**)
@@ -143,6 +143,41 @@ if config_env() == :prod do
 ```
 
 Read more https://hexdocs.pm/phoenix/Phoenix.Endpoint.html
+
+## Example
+
+**lib/my_app_web/components/layouts/root.html.heex**
+```elixir
+<!DOCTYPE html>
+<html lang="en" {class("[scrollbar-gutter:stable]")}>
+  <head>
+    <meta charset="utf-8" />
+    <.live_title>
+      <%= @page_title %>
+    </.live_title>
+    <link href={~p"/apple-touch-icon.png"} rel="apple-touch-icon" sizes="180x180" />
+    <link href={~p"/favicon-16x16.png"} rel="icon" type="image/png" sizes="16x16" />
+    <link href={~p"/favicon-32x32.png"} rel="icon" type="image/png" sizes="32x32" />
+    <link href={~p"/site.webmanifest"} rel="manifest" />
+    <link color="#c1272d" href={~p"/safari-pinned-tab.svg"} rel="mask-icon" />
+    <meta content={@page_description} name="description" />
+    <meta content="width=device-width, initial-scale=1" name="viewport" />
+    <meta content="yes" name="mobile-web-app-capable" />
+    <meta content="Youimmi" name="apple-mobile-web-app-title" />
+    <meta content="Youimmi" name="application-name" />
+    <meta content={get_csrf_token()} name="csrf-token" />
+    <meta content="#fff" name="apple-mobile-web-app-status-bar-style" />
+    <meta content="#fff" name="msapplication-TileColor" />
+    <meta content="#fff" name="msapplication-navbutton-color" />
+    <meta content="#fff" name="theme-color" />
+    <%= script("app", async: true, crossorigin: "anonymous") %>
+    <%= tailwind("app.sass") %>
+  </head>
+  <body>
+    <%= @inner_content %>
+  </body>
+</html>
+```
 
 ## Usage
 
