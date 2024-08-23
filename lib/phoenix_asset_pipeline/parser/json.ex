@@ -9,5 +9,9 @@ defmodule PhoenixAssetPipeline.Parser.JSON do
     |> IO.iodata_to_binary()
   end
 
-  defdelegate decode!(data), to: :json, as: :decode
+  def decode!(data) do
+    data
+    |> :json.decode(:ok, %{null: nil})
+    |> elem(0)
+  end
 end

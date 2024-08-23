@@ -6,6 +6,10 @@ Serve assets and static files from memory
 
 [![Hex.pm](https://img.shields.io/hexpm/v/phoenix_asset_pipeline.svg)](https://hex.pm/packages/phoenix_asset_pipeline) [![Documentation](https://img.shields.io/badge/documentation-gray)](https://hexdocs.pm/phoenix_asset_pipeline/api-reference.html)
 
+## Goal
+
+Achieve 100/100 scores in [Google PageSpeed ​​Insights](https://pagespeed.web.dev) test out of the box
+
 ## Features
 
 ### Common
@@ -33,7 +37,7 @@ Serve assets and static files from memory
 
 ## Documentation
 
-API documentation is available at https://hexdocs.pm/phoenix_asset_pipeline/1.0.0-alpha.1/api-reference.html
+API documentation is available at https://hexdocs.pm/phoenix_asset_pipeline/api-reference.html
 
 ## Installation
 
@@ -42,7 +46,7 @@ Add `phoenix_asset_pipeline` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:phoenix_asset_pipeline, "~> 1.0.0-alpha.1"}
+    {:phoenix_asset_pipeline, "~> 1.0.0"}
   ]
 end
 ```
@@ -64,7 +68,7 @@ Add `use PhoenixAssetPipeline.Helpers` inside **quote** block to `defp html_help
 ```elixir
 defp html_helpers do
   quote do
-    # Add asset pipeline macros (class, script, style and tailwind)
+    # Asset pipeline helpers (class, script, obfuscate, style and tailwind)
     use PhoenixAssetPipeline.Helpers # add this line
 
     # HTML escaping functionality
@@ -125,7 +129,7 @@ You can override the default configuration
 
 ```elixir
 config :dart_sass, "1.77.8"
-config :esbuild, "0.23.0"
+config :esbuild, "0.23.1"
 config :tailwind, "3.4.10"
 ```
 

@@ -4,7 +4,7 @@ defmodule PhoenixAssetPipeline.Helpers do
   """
 
   import Phoenix.HTML, only: [attributes_escape: 1]
-  import PhoenixAssetPipeline.Obfuscator, only: [obfuscate: 1, valid?: 1]
+  import PhoenixAssetPipeline.Obfuscator, only: [valid?: 1]
 
   import PhoenixAssetPipeline.Utils,
     only: [
@@ -18,9 +18,15 @@ defmodule PhoenixAssetPipeline.Helpers do
   alias PhoenixAssetPipeline.Compiler.Esbuild
   alias PhoenixAssetPipeline.Compiler.Sass
   alias PhoenixAssetPipeline.Compiler.Tailwind
+  alias PhoenixAssetPipeline.Obfuscator
   alias PhoenixAssetPipeline.Storage
 
   @before_compile PhoenixAssetPipeline.Utils
+
+  @doc """
+  Read more https://hexdocs.pm/phoenix_asset_pipeline/PhoenixAssetPipeline.Obfuscator.html
+  """
+  defdelegate obfuscate(class), to: Obfuscator
 
   defmacro __before_compile__(_) do
     assets = Storage.get(:assets, []) |> Enum.uniq() |> Macro.escape()
