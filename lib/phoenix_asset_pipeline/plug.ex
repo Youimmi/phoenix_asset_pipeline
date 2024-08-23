@@ -149,6 +149,8 @@ defmodule PhoenixAssetPipeline.Plug do
       else: put_resp_header(conn, "vary", "accept-encoding")
   end
 
+  defp mime_type(format), do: MIME.type(format)
+
   defp not_found(conn) do
     conn
     |> send_resp(404, "Not found")
@@ -166,16 +168,16 @@ defmodule PhoenixAssetPipeline.Plug do
       else: {:stale, conn}
   end
 
-  defp serve_range(conn, content, byte_size, [range]) do
+  defp serve_range(conn, format, content, byte_size, [range]) do
     with %{"bytes" => bytes} <- Utils.params(range),
          {range_start, range_end} <- start_and_end(bytes, byte_size) do
-      send_range(conn, content, range_start, range_end, byte_size)
+      send_range(conn, format, content, range_start, range_end, byte_size)
     else
-      _ -> send_asset(conn, content)
+      _ -> send_asset(conn, format, content)
     end
   end
 
-  defp serve_range(conn, content, _, _), do: send_asset(conn, content)
+  defp serve_range(conn, format, content, _, _), do: send_asset(conn, format, content)
 
   defp start_and_end("-" <> rest, byte_size) do
     case Integer.parse(rest) do
@@ -200,22 +202,25 @@ defmodule PhoenixAssetPipeline.Plug do
     end
   end
 
-  defp send_range(conn, content, 0, range_end, byte_size) when range_end == byte_size - 1 do
-    send_asset(conn, content)
+  defp send_range(conn, format, content, 0, range_end, byte_size)
+       when range_end == byte_size - 1 do
+    send_asset(conn, format, content)
   end
 
-  defp send_range(conn, content, range_start, range_end, byte_size) do
+  defp send_range(conn, format, content, range_start, range_end, byte_size) do
     length = range_end - range_start + 1
 
     conn
+    |> put_resp_content_type(mime_type(format))
     |> put_resp_header("content-range", "bytes #{range_start}-#{range_end}/#{byte_size}")
     |> send_resp(206, String.slice(content, range_start, length))
     |> halt()
   end
 
-  defp send_asset(conn, content) do
+  defp send_asset(conn, format, content) do
     conn
     |> maybe_add_vary()
+    |> put_resp_content_type(mime_type(format))
     |> put_resp_header("access-control-allow-origin", conn.private.phoenix_router_url)
     |> send_resp(200, content)
     |> halt()
@@ -227,10 +232,9 @@ defmodule PhoenixAssetPipeline.Plug do
     case put_cache_header(conn, asset) do
       {:stale, conn} ->
         conn
-        |> put_resp_header("content-type", MIME.type(format))
-        |> put_resp_header("accept-ranges", "bytes")
         |> maybe_add_encoding(encoding)
-        |> serve_range(content, byte_size, range)
+        |> put_resp_header("accept-ranges", "bytes")
+        |> serve_range(format, content, byte_size, range)
 
       {:fresh, conn} ->
         conn

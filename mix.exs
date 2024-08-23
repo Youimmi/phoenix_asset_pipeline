@@ -20,12 +20,12 @@ defmodule PhoenixAssetPipeline.MixProject do
       app: :phoenix_asset_pipeline,
       deps: deps(),
       description: @description,
-      dialyzer: [plt_add_apps: true],
+      dialyzer: [plt_add_apps: [:brotli, :dart_sass, :esbuild, :mix, :tailwind]],
       elixir: "~> 1.13",
       package: package(),
       source_url: @source_url,
       start_permanent: Mix.env() == :prod,
-      version: "1.0.1"
+      version: "1.0.2"
     ]
   end
 

@@ -10,23 +10,30 @@ defmodule PhoenixAssetPipeline.Obfuscator do
   @doc """
   Obfuscates the class name string by replacing with unique short name.
 
+  `phx-` prefixed class names are not obfuscated.
+
   ## Examples
 
       "mt-1"
       "mt-2"
+      "phx-click"
 
   ## Output
 
       "m"
       "m1"
+      "phx-click"
   """
-  def obfuscate(class_name, count \\ 0) when is_binary(class_name) and is_integer(count) do
+  def obfuscate_class(_, _ \\ 0)
+  def obfuscate_class(class_name = "phx-" <> _, _) when is_binary(class_name), do: class_name
+
+  def obfuscate_class(class_name, count) when is_binary(class_name) and is_integer(count) do
     classes = Storage.get(:classes, [])
     short_name = minify(class_name, count)
 
     case Enum.find(classes, fn {s, _} -> s == short_name end) do
       {^short_name, ^class_name} -> short_name
-      {^short_name, _} -> obfuscate(class_name, count + 1)
+      {^short_name, _} -> obfuscate_class(class_name, count + 1)
       _ -> store({short_name, class_name}, classes)
     end
   end
@@ -52,8 +59,8 @@ defmodule PhoenixAssetPipeline.Obfuscator do
     {css, source_map} = split_css_and_source_map(content)
     css = String.replace(css, "\\", "")
 
-    Regex.replace(~r/(\.)(?!phx-)#{@pattern.source}(\s*\{)/iu, css, fn
-      _, head, class, tail -> head <> obfuscate(class) <> tail
+    Regex.replace(~r/(\.)#{@pattern.source}(\s*\{)/iu, css, fn
+      _, head, class, tail -> head <> obfuscate_class(class) <> tail
     end) <> source_map
   end
 
@@ -71,8 +78,8 @@ defmodule PhoenixAssetPipeline.Obfuscator do
   def obfuscate_js(content) when is_binary(content) do
     {js, source_map} = split_js_and_source_map(content)
 
-    Regex.replace(~r/obfuscate\((?!phx-)#{@pattern.source}\)/iu, js, fn
-      _, head, class, tail -> head <> obfuscate(class) <> tail
+    Regex.replace(~r/obfuscate\(#{@pattern.source}\)/iu, js, fn
+      _, head, class, tail -> head <> obfuscate_class(class) <> tail
     end) <> source_map
   end
 

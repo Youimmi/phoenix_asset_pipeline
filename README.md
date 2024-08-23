@@ -179,6 +179,8 @@ Read more https://hexdocs.pm/phoenix/Phoenix.Endpoint.html
 </html>
 ```
 
+See example project [phoenix_asset_pipeline_example](https://github.com/Youimmi/phoenix_asset_pipeline_example)
+
 ## Usage
 
 ```sh
