@@ -65,7 +65,7 @@ defmodule PhoenixAssetPipeline do
 
     directives =
       [
-        "base-uri 'none'",
+        "base-uri 'self'",
         "default-src 'self'",
         "script-src 'unsafe-inline' #{conn.private.phoenix_static_url} #{Enum.join(script_src, " ")} 'strict-dynamic'",
         "style-src 'self' #{Enum.join(style_src, " ")}"

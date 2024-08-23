@@ -46,7 +46,7 @@ Add `phoenix_asset_pipeline` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:phoenix_asset_pipeline, "~> 1.0.0"}
+    {:phoenix_asset_pipeline, "~> 1.0"}
   ]
 end
 ```
