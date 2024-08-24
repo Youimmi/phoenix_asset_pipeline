@@ -14,7 +14,7 @@ Achieve 100/100 scores in [Google PageSpeed ​​Insights](https://pagespeed.we
 
 ### Common
 
-- **class**, **script**, **obfuscate**, **syle** and **tailwind** HTML helpers
+- **class**, **script**, **obfuscate**, **style** and **tailwind** HTML helpers
 - HTML class names obfuscation
 - JSON parser, based on Erlang/OTP 27.0
 - Pre-compiled assets and static files with compressed versions (**brotli**, **deflate** and **gzip**)
