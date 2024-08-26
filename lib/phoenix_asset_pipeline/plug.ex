@@ -222,7 +222,6 @@ defmodule PhoenixAssetPipeline.Plug do
     conn
     |> maybe_add_vary()
     |> put_resp_content_type(mime_type(format))
-    |> put_resp_header("access-control-allow-origin", conn.private.phoenix_router_url)
     |> send_resp(200, content)
     |> halt()
   end
@@ -235,6 +234,7 @@ defmodule PhoenixAssetPipeline.Plug do
         conn
         |> maybe_add_encoding(encoding)
         |> put_resp_header("accept-ranges", "bytes")
+        |> put_resp_header("access-control-allow-origin", conn.private.phoenix_router_url)
         |> serve_range(format, content, byte_size, range)
 
       {:fresh, conn} ->
