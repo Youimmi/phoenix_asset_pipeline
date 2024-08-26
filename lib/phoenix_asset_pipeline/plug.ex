@@ -53,7 +53,7 @@ defmodule PhoenixAssetPipeline.Plug do
         _
       )
       when meth in @allowed_methods do
-    with false <- String.starts_with?(request_url(conn), phoenix_static_url),
+    with true <- String.starts_with?(request_url(conn), phoenix_static_url),
          %{"digest" => digest, "format" => format} <-
            Regex.named_captures(@assets_pattern, URI.decode(path)) do
       accept = get_req_header(conn, "accept-encoding")
