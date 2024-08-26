@@ -28,7 +28,7 @@ defmodule PhoenixAssetPipeline.Obfuscator do
   def obfuscate_class(class_name = "phx-" <> _, _) when is_binary(class_name), do: class_name
 
   def obfuscate_class(class_name, count) when is_binary(class_name) and is_integer(count) do
-    classes = Storage.get(:classes, [])
+    classes = Storage.get(:classes)
     short_name = minify(class_name, count)
 
     case Enum.find(classes, fn {s, _} -> s == short_name end) do

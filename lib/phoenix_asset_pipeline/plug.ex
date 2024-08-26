@@ -53,14 +53,15 @@ defmodule PhoenixAssetPipeline.Plug do
         _
       )
       when meth in @allowed_methods do
-    with true <- String.starts_with?(request_url(conn), phoenix_static_url),
+    with false <- String.starts_with?(request_url(conn), phoenix_static_url),
          %{"digest" => digest, "format" => format} <-
            Regex.named_captures(@assets_pattern, URI.decode(path)) do
       accept = get_req_header(conn, "accept-encoding")
       range = get_req_header(conn, "range")
       {encoding, ext} = encoding(accept, range, @encodings)
 
-      Storage.get(:assets, [])
+      Storage.get(:modules)
+      |> Enum.flat_map(& &1.assets())
       |> Enum.find_value(fn
         {"." <> ^format <> ^ext, ^digest, content, byte_size} ->
           {content, digest, byte_size, :asset}
@@ -98,7 +99,7 @@ defmodule PhoenixAssetPipeline.Plug do
       range = get_req_header(conn, "range")
       {encoding, ext} = encoding(accept, range, @encodings)
 
-      phoenix_endpoint.assets()
+      phoenix_endpoint.static_files()
       |> Enum.find_value(fn
         {"." <> ^format <> ^ext, ^path, digest, content, byte_size} ->
           {content, digest, byte_size, :static}

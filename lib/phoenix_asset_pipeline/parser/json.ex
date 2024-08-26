@@ -1,7 +1,5 @@
 defmodule PhoenixAssetPipeline.Parser.JSON do
-  @moduledoc """
-    JSON parser, based on Erlang/OTP 27.0
-  """
+  @moduledoc false
 
   def encode_to_iodata!(data) do
     data

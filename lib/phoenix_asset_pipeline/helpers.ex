@@ -30,16 +30,16 @@ defmodule PhoenixAssetPipeline.Helpers do
   def obfuscate(class), do: obfuscate_class(class)
 
   defmacro __before_compile__(_) do
-    assets = Storage.get(:assets, []) |> Enum.uniq() |> Macro.escape()
-    integrities = Storage.get(:integrities, []) |> Enum.uniq() |> Macro.escape()
-
     quote do
       @on_load :on_load
 
-      def on_load do
-        Storage.put(:assets, unquote(assets))
-        Storage.put(:integrities, unquote(integrities))
-      end
+      @assets Storage.get({__MODULE__, :assets})
+      @integrities Storage.get({__MODULE__, :integrities})
+
+      def assets, do: @assets
+      def integrities, do: @integrities
+
+      def on_load, do: Storage.put(:modules, [__MODULE__])
     end
   end
 
@@ -153,11 +153,9 @@ defmodule PhoenixAssetPipeline.Helpers do
       |> put_integrity(integrity)
       |> put_track_static()
 
-    assets = Storage.get(:assets, [])
-    Storage.put(:assets, assets ++ assets(extname, digest, content))
-
-    integrities = Storage.get(:integrities, [])
-    Storage.put(:integrities, [{".js", integrity} | integrities])
+    %{module: module} = __CALLER__
+    Storage.put({module, :assets}, assets(extname, digest, content))
+    Storage.put({module, :integrities}, [{".js", integrity}])
 
     quote do
       endpoint = Storage.get(:endpoint)
@@ -196,19 +194,8 @@ defmodule PhoenixAssetPipeline.Helpers do
   """
   defmacro style(path, html_opts \\ []) when is_list(html_opts) do
     case Sass.new(path) do
-      {:error, msg} ->
-        compile_error!(CompileError, msg)
-
-      {content, integrity} ->
-        integrities = Storage.get(:integrities, [])
-        Storage.put(:integrities, [{".css", integrity} | integrities])
-
-        attrs =
-          html_opts
-          |> put_integrity(integrity)
-          |> sorted_attrs()
-
-        {:safe, [?<, "style", attrs, ?>, content, ?<, ?/, "style", ?>]}
+      {:error, msg} -> compile_error!(CompileError, msg)
+      {content, integrity} -> style_tag(__CALLER__, content, integrity, html_opts)
     end
   end
 
@@ -235,19 +222,8 @@ defmodule PhoenixAssetPipeline.Helpers do
   """
   defmacro tailwind(path, html_opts \\ []) when is_list(html_opts) do
     case Tailwind.new(path) do
-      {:error, msg} ->
-        compile_error!(CompileError, msg)
-
-      {content, integrity} ->
-        integrities = Storage.get(:integrities, [])
-        Storage.put(:integrities, [{".css", integrity} | integrities])
-
-        attrs =
-          html_opts
-          |> put_integrity(integrity)
-          |> sorted_attrs()
-
-        {:safe, [?<, "style", attrs, ?>, content, ?<, ?/, "style", ?>]}
+      {:error, msg} -> compile_error!(CompileError, msg)
+      {content, integrity} -> style_tag(__CALLER__, content, integrity, html_opts)
     end
   end
 
@@ -305,5 +281,16 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   defp put_track_static(opts) do
     Keyword.put_new(opts, :phx_track_static, true)
+  end
+
+  defp style_tag(%{module: module}, content, integrity, html_opts) do
+    Storage.put({module, :integrities}, [{".css", integrity}])
+
+    attrs =
+      html_opts
+      |> put_integrity(integrity)
+      |> sorted_attrs()
+
+    {:safe, [?<, "style", attrs, ?>, content, ?<, ?/, "style", ?>]}
   end
 end

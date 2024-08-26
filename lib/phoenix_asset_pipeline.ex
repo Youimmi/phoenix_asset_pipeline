@@ -1,8 +1,5 @@
 defmodule PhoenixAssetPipeline do
-  @moduledoc """
-  Provides assets and static files pipeline.
-  """
-
+  @moduledoc false
   import Plug.Conn, only: [put_private: 3, put_resp_header: 3, register_before_send: 2]
 
   alias PhoenixAssetPipeline.Storage
@@ -26,7 +23,7 @@ defmodule PhoenixAssetPipeline do
       plug :content_security_policy, @env
       plug :minify_html_body, @env
 
-      def assets, do: @static_files
+      def static_files, do: @static_files
 
       def on_load, do: Storage.put(:endpoint, __MODULE__)
     end
@@ -57,7 +54,7 @@ defmodule PhoenixAssetPipeline do
   defp base_url(_, url, _), do: url
 
   defp put_content_security_policy(conn) do
-    integrities = Storage.get(:integrities, [])
+    integrities = Storage.get(:modules) |> Enum.flat_map(& &1.integrities())
     fun = &"'sha512-#{&1}'"
 
     script_src = for {".js", integrity} <- integrities, do: fun.(integrity)
