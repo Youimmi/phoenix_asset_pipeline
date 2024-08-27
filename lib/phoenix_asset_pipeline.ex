@@ -11,17 +11,24 @@ defmodule PhoenixAssetPipeline do
 
       alias PhoenixAssetPipeline.Utils
 
+      paths = Utils.static_paths()
+
       @env Mix.env()
       @on_load :on_load
+      @paths_hash :erlang.md5(paths)
       @static_files Utils.static_files()
 
-      for path <- Utils.static_paths(), do: @external_resource(path)
+      for path <- paths, do: @external_resource(path)
 
       plug :put_static_url
       plug :assets
       plug :static, unquote(opts)
       plug :content_security_policy, @env
       plug :minify_html_body, @env
+
+      def __mix_recompile__?() do
+        Utils.static_paths() |> :erlang.md5() != @paths_hash
+      end
 
       def static_files, do: @static_files
 
