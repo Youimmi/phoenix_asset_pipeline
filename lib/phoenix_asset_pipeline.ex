@@ -1,6 +1,13 @@
 defmodule PhoenixAssetPipeline do
   @moduledoc false
-  import Plug.Conn, only: [put_private: 3, put_resp_header: 3, register_before_send: 2]
+  import Plug.Conn,
+    only: [
+      halt: 1,
+      put_private: 3,
+      put_resp_header: 3,
+      register_before_send: 2,
+      send_resp: 3
+    ]
 
   alias PhoenixAssetPipeline.Storage
 
@@ -20,6 +27,8 @@ defmodule PhoenixAssetPipeline do
 
       for path <- paths, do: @external_resource(path)
 
+      plug :heath_check
+      plug :put_router_url
       plug :put_static_url
       plug :assets
       plug :static, unquote(opts)
@@ -36,29 +45,50 @@ defmodule PhoenixAssetPipeline do
     end
   end
 
-  def minify_html_body(conn, :prod), do: register_before_send(conn, &minify/1)
-  def minify_html_body(conn, _), do: conn
-
   def content_security_policy(conn, :prod) do
     register_before_send(conn, &put_content_security_policy/1)
   end
 
   def content_security_policy(conn, _), do: conn
 
-  def put_static_url(%{host: host, private: %{phoenix_endpoint: phoenix_endpoint}} = conn, _) do
-    url = phoenix_endpoint.url()
-    static_url = phoenix_endpoint.static_url()
-
-    router_url = base_url(URI.parse(url), url, host)
-    static_url = base_url(URI.parse(static_url), static_url, host)
-
+  def heath_check(%{path_info: ["health"]} = conn, _) do
     conn
-    |> put_private(:phoenix_router_url, router_url)
-    |> put_private(:phoenix_static_url, static_url)
+    |> send_resp(200, "ok")
+    |> halt()
   end
 
-  defp base_url(%{host: "localhost"} = uri, _, host), do: URI.to_string(%{uri | host: host})
-  defp base_url(_, url, _), do: url
+  def heath_check(conn, _), do: conn
+
+  def minify_html_body(conn, :prod), do: register_before_send(conn, &minify/1)
+  def minify_html_body(conn, _), do: conn
+
+  def put_router_url(%{host: host, private: %{phoenix_endpoint: phoenix_endpoint}} = conn, _) do
+    router_url = phoenix_endpoint.struct_url() |> base_url(host)
+
+    put_private(conn, :phoenix_router_url, router_url)
+  end
+
+  def put_static_url(%{host: host, private: %{phoenix_endpoint: phoenix_endpoint}} = conn, _) do
+    static_url = phoenix_endpoint.static_url()
+    static_url = static_url |> URI.parse() |> base_url(host, static_url)
+
+    put_private(conn, :phoenix_static_url, static_url)
+  end
+
+  defp base_url(uri, host), do: URI.to_string(%{uri | host: host})
+  defp base_url(%{host: "localhost"} = uri, host, _), do: base_url(uri, host)
+  defp base_url(_, _, url), do: url
+
+  defp minify(%{resp_body: body, resp_headers: [{"content-type", "text/html" <> _} | _]} = conn) do
+    body =
+      body
+      |> Floki.parse_document!()
+      |> Floki.raw_html()
+
+    %{conn | resp_body: "<!DOCTYPE html>" <> body}
+  end
+
+  defp minify(conn), do: conn
 
   defp put_content_security_policy(conn) do
     integrities = Storage.get(:modules) |> Enum.flat_map(& &1.integrities())
@@ -78,15 +108,4 @@ defmodule PhoenixAssetPipeline do
 
     put_resp_header(conn, "content-security-policy", directives)
   end
-
-  defp minify(%{resp_body: body, resp_headers: [{"content-type", "text/html" <> _} | _]} = conn) do
-    body =
-      body
-      |> Floki.parse_document!()
-      |> Floki.raw_html()
-
-    %{conn | resp_body: "<!DOCTYPE html>" <> body}
-  end
-
-  defp minify(conn), do: conn
 end

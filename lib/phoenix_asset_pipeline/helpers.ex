@@ -127,7 +127,7 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   ## Output
 
-  If `static_url/0` returns "localhost" hostname, root path will be used
+  If `url/0` is equal to `static_url/0`, the root path will be used.
 
       <script async="async" crossorigin="anonymous" integrity="sha512-<integrity>" phx-track-static="phx-track-static" src="/<path>-<digest>.js">
       </script>
@@ -161,7 +161,7 @@ defmodule PhoenixAssetPipeline.Helpers do
       endpoint = Storage.get(:endpoint)
 
       src =
-        if endpoint.host() == "localhost",
+        if endpoint.url() == endpoint.static_url(),
           do: unquote(src_path),
           else: endpoint.static_url() <> unquote(src_path)
 
