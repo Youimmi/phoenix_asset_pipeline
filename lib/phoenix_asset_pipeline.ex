@@ -97,16 +97,24 @@ defmodule PhoenixAssetPipeline do
 
     script_src = for {".js", integrity} <- integrities, do: fun.(integrity)
     style_src = for {".css", integrity} <- integrities, do: fun.(integrity)
+    static_url = conn.private.phoenix_static_url
+    report_uri = static_url <> "/csp-report"
 
     directives =
       [
-        "base-uri 'self'",
+        "base-uri 'none'",
         "default-src 'self'",
-        "script-src 'unsafe-inline' #{conn.private.phoenix_static_url} #{Enum.join(script_src, " ")} 'strict-dynamic'",
+        "object-src 'none';",
+        "report-to csp-endpoint",
+        "trusted-types *",
+        "require-trusted-types-for 'script'",
+        "script-src 'unsafe-inline' #{static_url} #{Enum.join(script_src, " ")} 'strict-dynamic'",
         "style-src 'self' #{Enum.join(style_src, " ")}"
       ]
       |> Enum.join("; ")
 
-    put_resp_header(conn, "content-security-policy", directives)
+    conn
+    |> put_resp_header("content-security-policy", directives)
+    |> put_resp_header("reporting-endpoints", "csp-endpoint=#{report_uri}")
   end
 end
