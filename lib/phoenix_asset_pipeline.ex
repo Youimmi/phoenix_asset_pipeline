@@ -63,7 +63,8 @@ defmodule PhoenixAssetPipeline do
   def minify_html_body(conn, _), do: conn
 
   def put_router_url(%{host: host, private: %{phoenix_endpoint: phoenix_endpoint}} = conn, _) do
-    router_url = phoenix_endpoint.struct_url() |> base_url(host)
+    router_url = phoenix_endpoint.url()
+    router_url = phoenix_endpoint.struct_url() |> base_url(host, router_url)
 
     put_private(conn, :phoenix_router_url, router_url)
   end
