@@ -5,7 +5,7 @@ defmodule PhoenixAssetPipeline.Obfuscator do
 
   alias PhoenixAssetPipeline.Storage
 
-  @pattern ~r/(?!\d)([-a-z)([[\]\()-,:#'"\.\w]*)/
+  @pattern ~r/(?!\d)([-a-z)([[\]\()-,:#'"\/\.\w]*)/
 
   @doc """
   Obfuscates the class name string by replacing with unique short name.
