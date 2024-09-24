@@ -35,7 +35,7 @@ defmodule PhoenixAssetPipeline do
       plug :content_security_policy, @env
       plug :minify_html_body, @env
 
-      def __mix_recompile__?() do
+      def __mix_recompile__? do
         Utils.static_paths() |> :erlang.md5() != @paths_hash
       end
 

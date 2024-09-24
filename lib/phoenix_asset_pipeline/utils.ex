@@ -46,8 +46,8 @@ defmodule PhoenixAssetPipeline.Utils do
   defmacro __before_compile__(_) do
     Application.put_all_env(
       dart_sass: version(:dart_sass, "1.79.3"),
-      esbuild: version(:esbuild, "0.23.1"),
-      tailwind: version(:tailwind, "3.4.12")
+      esbuild: version(:esbuild, "0.24.0"),
+      tailwind: version(:tailwind, "3.4.13")
     )
 
     File.exists?(Esbuild.bin_path()) || Esbuild.install()

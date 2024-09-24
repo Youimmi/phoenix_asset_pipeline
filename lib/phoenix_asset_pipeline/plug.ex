@@ -169,16 +169,16 @@ defmodule PhoenixAssetPipeline.Plug do
       else: {:stale, conn}
   end
 
-  defp serve_range(conn, format, content, byte_size, [range]) do
+  defp serve_range(conn, content, byte_size, [range]) do
     with %{"bytes" => bytes} <- Utils.params(range),
          {range_start, range_end} <- start_and_end(bytes, byte_size) do
-      send_range(conn, format, content, range_start, range_end, byte_size)
+      send_range(conn, content, range_start, range_end, byte_size)
     else
-      _ -> send_asset(conn, format, content)
+      _ -> send_asset(conn, content)
     end
   end
 
-  defp serve_range(conn, format, content, _, _), do: send_asset(conn, format, content)
+  defp serve_range(conn, content, _, _), do: send_asset(conn, content)
 
   defp start_and_end("-" <> rest, byte_size) do
     case Integer.parse(rest) do
@@ -203,25 +203,23 @@ defmodule PhoenixAssetPipeline.Plug do
     end
   end
 
-  defp send_range(conn, format, content, 0, range_end, byte_size)
+  defp send_range(conn, content, 0, range_end, byte_size)
        when range_end == byte_size - 1 do
-    send_asset(conn, format, content)
+    send_asset(conn, content)
   end
 
-  defp send_range(conn, format, content, range_start, range_end, byte_size) do
+  defp send_range(conn, content, range_start, range_end, byte_size) do
     length = range_end - range_start + 1
 
     conn
-    |> put_resp_content_type(mime_type(format))
     |> put_resp_header("content-range", "bytes #{range_start}-#{range_end}/#{byte_size}")
     |> send_resp(206, String.slice(content, range_start, length))
     |> halt()
   end
 
-  defp send_asset(conn, format, content) do
+  defp send_asset(conn, content) do
     conn
     |> maybe_add_vary()
-    |> put_resp_content_type(mime_type(format))
     |> send_resp(200, content)
     |> halt()
   end
@@ -233,9 +231,10 @@ defmodule PhoenixAssetPipeline.Plug do
       {:stale, conn} ->
         conn
         |> maybe_add_encoding(encoding)
+        |> put_resp_content_type(mime_type(format))
         |> put_resp_header("accept-ranges", "bytes")
         |> put_resp_header("access-control-allow-origin", conn.private.phoenix_router_url)
-        |> serve_range(format, content, byte_size, range)
+        |> serve_range(content, byte_size, range)
 
       {:fresh, conn} ->
         conn
