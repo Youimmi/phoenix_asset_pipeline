@@ -25,7 +25,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       package: package(),
       source_url: @source_url,
       start_permanent: Mix.env() == :prod,
-      version: "1.0.11"
+      version: "1.0.12"
     ]
   end
 
