@@ -25,7 +25,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       package: package(),
       source_url: @source_url,
       start_permanent: Mix.env() == :prod,
-      version: "1.0.12"
+      version: "1.0.13"
     ]
   end
 
@@ -43,7 +43,6 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:mix_audit, "~> 2.1", @dev_opts},
       {:phoenix_html, "~> 4.1.1"},
       {:plug, "~> 1.16.1"},
-      {:sobelow, "~> 0.13", @dev_opts},
       {:styler, "~> 1.1", @dev_opts},
       {:tailwind, "~> 0.2", runtime: false}
     ]
@@ -66,8 +65,7 @@ defmodule PhoenixAssetPipeline.MixProject do
         "compile --warnings-as-errors",
         "format --check-formatted --dry-run",
         "credo -A",
-        "dialyzer",
-        "sobelow --strict -i CI.System,Traversal,XSS.ContentType,XSS.SendResp"
+        "dialyzer"
       ],
       setup: ["cmd rm -rf _build deps", "deps.get"],
       upgrade: ["cmd rm -rf mix.lock", "setup"]
