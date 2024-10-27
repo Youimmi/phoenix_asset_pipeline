@@ -25,24 +25,24 @@ defmodule PhoenixAssetPipeline.MixProject do
       package: package(),
       source_url: @source_url,
       start_permanent: Mix.env() == :prod,
-      version: "1.0.13"
+      version: "1.0.14"
     ]
   end
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:brotli, "~> 0.3.2", runtime: false},
+      {:brotli, "~> 0.3", runtime: false},
       {:credo, "~> 1.7", @dev_opts},
       {:dart_sass, "~> 0.7", runtime: false},
       {:dialyxir, "~> 1.4", @dev_opts},
       {:esbuild, "~> 0.8", runtime: false},
       {:ex_doc, ">= 0.0.0", @dev_opts},
-      {:floki, ">= 0.36.2"},
+      {:floki, ">= 0.36.3"},
       {:git_hooks, "~> 0.8.0-pre0", @dev_opts},
       {:mix_audit, "~> 2.1", @dev_opts},
-      {:phoenix_html, "~> 4.1.1"},
-      {:plug, "~> 1.16.1"},
+      {:phoenix_html, "~> 4.1"},
+      {:plug, "~> 1.16"},
       {:styler, "~> 1.1", @dev_opts},
       {:tailwind, "~> 0.2", runtime: false}
     ]
