@@ -1,0 +1,9 @@
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "unwind"
+strip = true
+
+[workspace]
+members = ["native/phoenix_asset_pipeline"]
+resolver = "2"

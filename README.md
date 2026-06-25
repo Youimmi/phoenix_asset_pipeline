@@ -1,201 +1,229 @@
 # PhoenixAssetPipeline
 
-Asset pipeline for Phoenix applications
+Asset pipeline for Phoenix and Phoenix LiveView applications.
 
-Serve assets and static files from memory
+[![Hex.pm](https://img.shields.io/hexpm/v/phoenix_asset_pipeline.svg)](https://hex.pm/packages/phoenix_asset_pipeline)
+[![Documentation](https://img.shields.io/badge/documentation-gray)](https://hexdocs.pm/phoenix_asset_pipeline)
 
-[![Hex.pm](https://img.shields.io/hexpm/v/phoenix_asset_pipeline.svg)](https://hex.pm/packages/phoenix_asset_pipeline) [![Documentation](https://img.shields.io/badge/documentation-gray)](https://hexdocs.pm/phoenix_asset_pipeline/api-reference.html)
+PhoenixAssetPipeline builds static assets into an in-memory manifest, rewrites
+asset helpers to digested paths, serves compressed static files, provides a HEEx
+engine with class extraction/minification, and exposes a small set of Phoenix
+plugs for CSP, early hints, manifest snapshots, and static delivery.
 
-## Goal
+## Requirements
 
-Achieve 100/100 scores in [Google PageSpeed ​​Insights](https://pagespeed.web.dev) test out of the box
-
-## Features
-
-### Common
-
-- **class**, **script**, **obfuscate**, **style** and **tailwind** HTML helpers
-- HTML class names obfuscation
-- JSON parser, based on Erlang/OTP 27.0
-- Pre-compiled assets and static files with compressed versions (**brotli**, **deflate** and **gzip**)
-- Add [Subresource Integrity (SRI)](https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity) attributes
-- Define your custom assets domain
-
-### Dev environment
-
-- Add [Sass](https://sass-lang.com) support
-- Add [TypeScript](https://www.typescriptlang.org) support
-- Add [Tailwind CSS](https://tailwindcss.com) support with class names obfuscation
-- **LiveReload** support
-
-### Prod environment
-
-- Minify CSS and JS
-- Minify HTTP response body
-- Add [Content Security Policy (CSP)](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP) directives
-- **Releases** support
-
-## Documentation
-
-API documentation is available at https://hexdocs.pm/phoenix_asset_pipeline/api-reference.html
+- Elixir 1.18 or later
+- Erlang/OTP 28 or later
+- Phoenix LiveView
+- A Rust toolchain that supports Rust 2024 edition
+- Bun, when using the included asset build tasks
 
 ## Installation
 
-Add `phoenix_asset_pipeline` to your list of dependencies in `mix.exs`:
+Add `phoenix_asset_pipeline` to your dependencies:
 
 ```elixir
 def deps do
   [
-    {:phoenix_asset_pipeline, "~> 1.0"}
+    {:phoenix_asset_pipeline, "~> 2.0"}
   ]
 end
 ```
 
-#### Opional
-
-Requires **Erlang/OTP 27.0** or later
-
-Update your `config/config.exs`:
+Configure Phoenix and the asset pipeline:
 
 ```elixir
-config :phoenix, :json_library, PhoenixAssetPipeline.Parser.JSON
+config :phoenix,
+  template_engines: [heex: PhoenixAssetPipeline.HTML.Engine]
+
+config :phoenix_asset_pipeline,
+  endpoint: MyAppWeb.Endpoint,
+  otp_app: :my_app
 ```
 
-### Add HTML helpers
-
-Add `use PhoenixAssetPipeline.Helpers` inside **quote** block to `defp html_helpers` in your `lib/my_app_web.ex`:
+In development, cache the manifest and skip CSP on Phoenix debug error pages:
 
 ```elixir
-defp html_helpers do
+config :phoenix_asset_pipeline,
+  cache_manifest: true,
+  csp_skip_statuses: 500..599
+```
+
+In production, load a precompiled manifest module:
+
+```elixir
+config :phoenix_asset_pipeline, precompiled_manifest: true
+```
+
+## Supervision
+
+Start the manifest store before your endpoint. In development, add the watcher
+when the endpoint code reloader is enabled.
+
+```elixir
+@assets_watcher if Application.compile_env(:my_app, [MyAppWeb.Endpoint, :code_reloader], false),
+                  do: [PhoenixAssetPipeline.Watcher],
+                  else: []
+
+children = [
+  PhoenixAssetPipeline.Manifest,
+  MyAppWeb.Endpoint
+] ++ @assets_watcher
+```
+
+## Endpoint
+
+Use the endpoint plugs before your router. `Plug.Static` serves manifest-backed
+static files and digested assets.
+
+```elixir
+defmodule MyAppWeb.Endpoint do
+  use Phoenix.Endpoint, otp_app: :my_app
+
+  import PhoenixAssetPipeline.Plug,
+    only: [
+      csp_report: 2,
+      put_content_security_policy: 2,
+      put_private_phoenix_assigns: 2,
+      put_reporting_endpoints: 2
+    ]
+
+  alias PhoenixAssetPipeline.Plug.Static
+
+  if code_reloading? do
+    plug PhoenixAssetPipeline.Plug, :put_asset_manifest_snapshot
+  end
+
+  plug :put_private_phoenix_assigns
+  plug Static, only: MyAppWeb.static_paths()
+  plug :put_content_security_policy
+  plug :put_reporting_endpoints
+  plug :csp_report
+
+  plug MyAppWeb.Router
+end
+```
+
+## Router
+
+Use the base secure browser headers in your browser pipeline. The endpoint CSP
+plug merges asset hosts and manifest integrities into this policy before the
+response is sent.
+
+```elixir
+@secure_browser_headers PhoenixAssetPipeline.Plug.secure_browser_headers(
+                          cross_origin_opener_policy: Mix.env() == :prod
+                        )
+
+pipeline :browser do
+  plug :accepts, ["html"]
+  plug :fetch_session
+  plug :put_secure_browser_headers, @secure_browser_headers
+end
+```
+
+Early hints can be added to selected pipelines:
+
+```elixir
+import PhoenixAssetPipeline.Plug, only: [early_hints: 2]
+
+pipeline :browser do
+  plug :early_hints
+end
+```
+
+## Layouts
+
+Import the macros and helpers in your HTML surface:
+
+```elixir
+def html do
   quote do
-    # Asset pipeline helpers (class, script, obfuscate, style and tailwind)
-    use PhoenixAssetPipeline.Helpers # add this line
+    use PhoenixAssetPipeline.HTML.Macros
 
-    # HTML escaping functionality
-    import Phoenix.HTML
-    # Core UI components and translation
-    import MyAppWeb.CoreComponents
-    import MyAppWeb.Gettext
-
-    # Shortcut for generating JS commands
-    alias Phoenix.LiveView.JS
-
-    # Routes generation with the ~p sigil
-    unquote(verified_routes())
+    import PhoenixAssetPipeline.Components
+    import PhoenixAssetPipeline.Helpers
   end
 end
 ```
 
-### Add LiveReload
+Use the generated asset digest in your root layout if you want stale LiveView
+clients to reconnect after deploys:
 
-Add the *assets pattern* to your `config/dev.exs`:
-
-```elixir
-config :my_app, MyAppWeb.Endpoint,
-  live_reload: [
-    patterns: [
-      ~r"assets/(css|js)/.*(css|scss|sass|js|ts)$", # add this line
-      ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
-      ~r"priv/gettext/.*(po)$",
-      ~r"lib/my_web/(controllers|live|components)/.*(ex|heex)$"
-    ]
-  ]
-```
-
-### Add plug
-
-Replace **Plug.Static** with **PhoenixAssetPipeline** in your `lib/endpoint.ex`:
-
-```elixir
-
-defmodule MyAppWeb.Endpoint do
-  use Phoenix.Endpoint, otp_app: :my_app
-  use PhoenixAssetPipeline, only: MyAppWeb.static_paths()
-
-  # plug Plug.Static,
-  #   at: "/",
-  #   from: :yui,
-  #   gzip: false,
-  #   only: MyAppWeb.static_paths()
-```
-
-Options https://github.com/Youimmi/phoenix_asset_pipeline/blob/main/lib/phoenix_asset_pipeline/plug.ex
-
-## Configure
-
-You can override the default configuration
-
-`config/config.exs`:
-
-```elixir
-config :dart_sass, "1.77.8"
-config :esbuild, "0.23.1"
-config :tailwind, "3.4.10"
-```
-
-Add `static_url` to your `config/runtime.exs`:
-
-```elixir
-if config_env() == :prod do
-  assets_host = System.get_env("ASSETS_HOST") || "assets.example.com"
-
-  config :my_app, MyAppWeb.Endpoint, static_url: [host: assets_host, port: 443, scheme: "https"]
-```
-
-Read more https://hexdocs.pm/phoenix/Phoenix.Endpoint.html
-
-## Example
-
-**lib/my_app_web/components/layouts/root.html.heex**
-```elixir
-<!DOCTYPE html>
-<html lang="en" {class("[scrollbar-gutter:stable]")}>
+```heex
+<html data-d={asset_digest()}>
   <head>
-    <meta charset="utf-8" />
-    <.live_title>
-      <%= @page_title %>
-    </.live_title>
-    <link href={~p"/apple-touch-icon.png"} rel="apple-touch-icon" sizes="180x180" />
-    <link href={~p"/favicon-16x16.png"} rel="icon" type="image/png" sizes="16x16" />
-    <link href={~p"/favicon-32x32.png"} rel="icon" type="image/png" sizes="32x32" />
-    <link href={~p"/site.webmanifest"} rel="manifest" />
-    <link color="#c1272d" href={~p"/safari-pinned-tab.svg"} rel="mask-icon" />
-    <meta content={@page_description} name="description" />
-    <meta content="width=device-width, initial-scale=1" name="viewport" />
-    <meta content="yes" name="mobile-web-app-capable" />
-    <meta content="Youimmi" name="apple-mobile-web-app-title" />
-    <meta content="Youimmi" name="application-name" />
-    <meta content={get_csrf_token()} name="csrf-token" />
-    <meta content="#fff" name="apple-mobile-web-app-status-bar-style" />
-    <meta content="#fff" name="msapplication-TileColor" />
-    <meta content="#fff" name="msapplication-navbutton-color" />
-    <meta content="#fff" name="theme-color" />
-    <%= script("app", async: true, crossorigin: "anonymous") %>
-    <%= tailwind("app.sass") %>
+    {script("app", async: true, crossorigin: true)}
+    {style("app")}
   </head>
   <body>
-    <%= @inner_content %>
+    {@inner_content}
   </body>
 </html>
 ```
 
-See example project [phoenix_asset_pipeline_example](https://github.com/Youimmi/phoenix_asset_pipeline_example)
+Then add the LiveView hook:
 
-## Usage
-
-```sh
-mix phx.server
+```elixir
+on_mount {PhoenixAssetPipeline.LiveView, fallback_path: "/"}
 ```
 
-## Release
+## Asset Layout
 
-All assets and static files will be compiled into elixir macors without the **ptiv/static** folder
+Assets are read from `priv/static` by default:
 
-```sh
-MIX_ENV=prod mix release
-_build/prod/rel/my_app/bin/my_app start
+- `assets/css/*.css` is minified, class-obfuscated, and exposed through `style/2`.
+- `assets/js/*.js` is exposed through `script/2`.
+- `assets/img/**` and `assets/svg/**` are fingerprinted for `img/2`,
+  `source/1`, `picture/1`, and `svg_sprite_href/1`.
+- Other files under `priv/static` are served as static files.
+
+Set a different static directory at compile time when needed:
+
+```elixir
+config :phoenix_asset_pipeline, static_dir: "priv/static"
 ```
 
-## Copyright and License
+## Mix Tasks
 
-**PhoenixAssetPipeline** is released under [the MIT License](./LICENSE)
+Add aliases in your application:
+
+```elixir
+defp aliases do
+  [
+    "assets.build": ["phoenix_asset_pipeline.assets.build"],
+    "assets.deploy": ["phoenix_asset_pipeline.assets.deploy"]
+  ]
+end
+```
+
+The tasks run configured Bun profiles and then generate the manifest. Override
+profile names when your app uses custom Bun aliases:
+
+```elixir
+config :phoenix_asset_pipeline,
+  bun_profiles: [
+    css: :my_app_css,
+    images: :my_app_images,
+    install: :my_app_install,
+    js: :my_app_js,
+    svg: :my_app_svg
+  ]
+```
+
+For releases, generate the production manifest before assembling the release:
+
+```sh
+MIX_ENV=prod mix phoenix_asset_pipeline.manifest
+```
+
+You can remove bundled static files from the release after the manifest is
+generated:
+
+```elixir
+steps: [:assemble, &PhoenixAssetPipeline.Release.strip_static/1]
+```
+
+## License
+
+PhoenixAssetPipeline is released under the MIT License. See [LICENSE](./LICENSE).
