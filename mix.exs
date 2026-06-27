@@ -1,16 +1,17 @@
 defmodule PhoenixAssetPipeline.MixProject do
   use Mix.Project
 
-  @description "Asset pipeline for Phoenix app"
-  @dev_opts [only: :dev, runtime: false]
+  @minimum_otp_release 28
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
+  @version "2.0.0"
 
-  defp package do
+  if String.to_integer(System.otp_release()) < @minimum_otp_release do
+    raise("Requires Erlang/OTP #{@minimum_otp_release} or later")
+  end
+
+  def application do
     [
-      files: ["lib", "LICENSE", "mix.exs", "README.md"],
-      maintainers: ["Yuri S."],
-      licenses: ["MIT"],
-      links: %{"GitHub" => @source_url}
+      extra_applications: [:logger]
     ]
   end
 
@@ -19,56 +20,93 @@ defmodule PhoenixAssetPipeline.MixProject do
       aliases: aliases(),
       app: :phoenix_asset_pipeline,
       deps: deps(),
-      description: @description,
-      dialyzer: [plt_add_apps: [:brotli, :dart_sass, :esbuild, :mix, :tailwind]],
-      elixir: "~> 1.13",
+      description: "Asset pipeline for Phoenix applications",
+      docs: docs(),
+      elixir: "~> 1.18",
+      elixirc_options: [warnings_as_errors: true],
       package: package(),
       source_url: @source_url,
       start_permanent: Mix.env() == :prod,
-      version: "1.0.15"
+      version: @version
     ]
   end
 
-  # Run "mix help deps" to learn about dependencies.
-  defp deps do
-    [
-      {:brotli, "~> 0.3", runtime: false},
-      {:credo, "~> 1.7", @dev_opts},
-      {:dart_sass, "~> 0.7", runtime: false},
-      {:dialyxir, "~> 1.4", @dev_opts},
-      {:esbuild, "~> 0.8", runtime: false},
-      {:ex_doc, ">= 0.0.0", @dev_opts},
-      {:floki, ">= 0.36.3"},
-      {:git_hooks, "~> 0.8.0-pre0", @dev_opts},
-      {:mix_audit, "~> 2.1", @dev_opts},
-      {:phoenix_html, "~> 4.1"},
-      {:plug, "~> 1.16"},
-      {:styler, "~> 1.2", @dev_opts},
-      {:tailwind, "~> 0.2", runtime: false}
-    ]
-  end
-
-  # Aliases are shortcuts or tasks specific to the current project.
-  # For example, to install project dependencies and perform other setup tasks, run:
-  #
-  #     $ mix setup
-  #
-  # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
-      lint: [
-        "deps.get",
+      format: [
+        "format",
+        "cmd cargo fmt --manifest-path native/phoenix_asset_pipeline/Cargo.toml"
+      ],
+      precommit: [
         "hex.audit",
         "hex.outdated",
-        "deps.audit",
         "deps.unlock --check-unused",
         "compile --warnings-as-errors",
+        "credo --strict",
+        "cmd cargo fmt --all -- --check",
         "format --check-formatted --dry-run",
-        "credo -A",
-        "dialyzer"
+        "deps.unlock --unused",
+        "format"
       ],
-      setup: ["cmd rm -rf _build deps", "deps.get"],
-      upgrade: ["cmd rm -rf mix.lock", "setup"]
+      setup: [
+        "deps.get",
+        "compile"
+      ],
+      upgrade: [
+        "cmd rm -rf Cargo.lock target",
+        "cmd rm -rf _build deps mix.lock",
+        "deps.get",
+        "compile --force",
+        "format"
+      ]
+    ]
+  end
+
+  defp deps do
+    [
+      {:any_ascii, "~> 0.3"},
+      {:credo, "~> 1.7", only: :dev, runtime: false},
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
+      {:file_system, "~> 1.1"},
+      {:mime, "~> 2.0"},
+      {:phoenix_html, "~> 4.2"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:plug, "~> 1.20"},
+      {:rustler, "~> 0.38", runtime: false},
+      {:styler, "~> 1.11", only: :dev, runtime: false},
+      {:vix, "~> 0.39.0"}
+    ]
+  end
+
+  defp docs do
+    [
+      exclude_patterns: ["native/phoenix_asset_pipeline/target"],
+      extras: ["CHANGELOG.md", "LICENSE", "README.md"],
+      main: "readme",
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
+      source_ref: "v#{@version}",
+      source_url: @source_url
+    ]
+  end
+
+  defp package do
+    [
+      files: [
+        "Cargo.lock",
+        "Cargo.toml",
+        "CHANGELOG.md",
+        "LICENSE",
+        "README.md",
+        "lib",
+        "mix.exs",
+        "native"
+      ],
+      licenses: ["MIT"],
+      links: %{
+        "GitHub" => @source_url,
+        "Youimmi" => "https://youimmi.com"
+      },
+      maintainers: ["Yuri S."]
     ]
   end
 end
