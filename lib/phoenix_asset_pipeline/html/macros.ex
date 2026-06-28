@@ -51,8 +51,18 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   def __class_value_ast__(classes, env) do
     classes = if is_list(classes), do: classes, else: [classes]
 
-    if literal_class_list?(classes),
-      do: class_ast(classes, nil, env)
+    cond do
+      literal_class_list?(classes) ->
+        class_ast(classes, nil, env)
+
+      mixed_literal_and_class_helper_list?(classes) ->
+        raise ArgumentError,
+              "mixed literal class strings and class helper calls are not supported in class attributes. " <>
+                "Wrap literal strings with class(...), or move them into a helper that returns class(...)."
+
+      true ->
+        nil
+    end
   end
 
   @doc """
@@ -383,6 +393,22 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
 
   defp class_group(_), do: :error
 
+  defp class_helper_call?({:class, _, _}), do: true
+
+  defp class_helper_call?({name, _, args}) when is_atom(name) and is_list(args) do
+    name
+    |> Atom.to_string()
+    |> String.ends_with?("_class")
+  end
+
+  defp class_helper_call?({{:., _, [_module, name]}, _, args}) when is_atom(name) and is_list(args) do
+    name
+    |> Atom.to_string()
+    |> String.ends_with?("_class")
+  end
+
+  defp class_helper_call?(_), do: false
+
   defp literal_class?({:{}, _, [truthy_classes, falsy_classes, _]}) do
     literal_class_group?(truthy_classes) and literal_class_group?(falsy_classes)
   end
@@ -406,6 +432,10 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   defp literal_class_list?([class | rest]), do: literal_class?(class) and literal_class_list?(rest)
 
   defp literal_class_list?([]), do: true
+
+  defp mixed_literal_and_class_helper_list?(classes) do
+    Enum.any?(classes, &literal_class?/1) and Enum.any?(classes, &class_helper_call?/1)
+  end
 
   defp skip_space_bytes(classes, index, size) when index < size do
     if :binary.at(classes, index) == ?\s do
