@@ -74,7 +74,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:plug, "~> 1.20"},
       {:rustler, "~> 0.38", runtime: false},
       {:styler, "~> 1.11", only: :dev, runtime: false},
-      {:vix, "~> 0.39.0"}
+      {:vix, "~> 0.40"}
     ]
   end
 
