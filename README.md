@@ -110,6 +110,21 @@ end
 Remove `Endpoint` asset watchers. Keep `live_reload` patterns if you want
 Phoenix LiveReload to refresh the browser.
 
+Use early hints in router pipelines:
+
+```elixir
+defmodule MyAppWeb.Router do
+  import PhoenixAssetPipeline.Plug, only: [early_hints: 2]
+
+  pipeline :browser do
+    plug :early_hints,
+      links: [
+        {"/site.webmanifest", rel: "preload", as: "fetch", type: "application/manifest+json", crossorigin: true}
+      ]
+  end
+end
+```
+
 ```elixir
 config :my_app, MyAppWeb.Endpoint,
   live_reload: [

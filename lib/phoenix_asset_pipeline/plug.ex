@@ -90,12 +90,13 @@ defmodule PhoenixAssetPipeline.Plug do
   def csp_report(conn, _), do: conn
 
   @doc """
-  Sends 103 early hints for the static origin and manifest-backed scripts.
+  Sends 103 early hints for the static origin, manifest-backed scripts, and configured links.
   """
-  def early_hints(%{private: %{phoenix_static_url: static_url}} = conn, _) do
+  def early_hints(%{private: %{phoenix_static_url: static_url}} = conn, opts) do
     link =
       :early_hints_preloads
       |> Manifest.get([])
+      |> Enum.concat(early_hints_links(opts))
       |> Enum.reduce(["<", static_url, @early_hints_preconnect_suffix], fn preload, acc ->
         [acc, @early_hints_preload_prefix, static_url, preload]
       end)
@@ -216,6 +217,29 @@ defmodule PhoenixAssetPipeline.Plug do
     end
   rescue
     _ -> :error
+  end
+
+  defp early_hint_attr({_, false}), do: []
+  defp early_hint_attr({_, nil}), do: []
+  defp early_hint_attr({name, true}), do: ["; ", early_hint_attr_name(name)]
+  defp early_hint_attr({name, value}), do: ["; ", early_hint_attr_name(name), "=", to_string(value)]
+
+  defp early_hint_attr_name(name) when is_atom(name), do: Atom.to_string(name)
+  defp early_hint_attr_name(name), do: to_string(name)
+
+  defp early_hint_attrs(attrs), do: Enum.map(attrs, &early_hint_attr/1)
+
+  defp early_hint_link({link, attrs}) when is_binary(link) and is_list(attrs) do
+    [IO.iodata_to_binary([link, ?>, early_hint_attrs(attrs)])]
+  end
+
+  defp early_hint_link(_), do: []
+
+  defp early_hints_links(opts) do
+    opts
+    |> Keyword.get(:links, [])
+    |> List.wrap()
+    |> Enum.flat_map(&early_hint_link/1)
   end
 
   defp html_response?(conn) do
