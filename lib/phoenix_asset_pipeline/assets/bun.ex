@@ -251,6 +251,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
   @css_ext ".css"
   @entry_exts ~w(.cjs .cts .js .jsx .mjs .mts .ts .tsx)
+  @install_lock {__MODULE__, :install}
   @install_cache_file "bun_install.term"
   @output_cache_file "bun_assets.term"
   @output_cache_version 1
@@ -293,11 +294,10 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     js_assets ++ css_assets ++ svg_assets
   end
 
-  defp bun_install_args(assets_dir) do
-    if asset_mode() == :prod and lockfile?(assets_dir),
-      do: ~w(install --frozen-lockfile),
-      else: ~w(install)
-  end
+  defp bun_install_args(assets_dir), do: bun_install_args(asset_mode(), lockfile?(assets_dir))
+
+  defp bun_install_args(:prod, true), do: ~w(install --frozen-lockfile)
+  defp bun_install_args(_, _), do: ~w(install)
 
   defp cached_css_assets(source_cache, next_cache, assets_dir, entries, install_signature) do
     Enum.flat_map_reduce(entries, next_cache, fn entry, cache ->
@@ -341,18 +341,22 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   end
 
   defp ensure_dependencies(assets_dir) do
-    signature = install_signature(assets_dir)
+    :global.trans(
+      {@install_lock, Path.expand(assets_dir)},
+      fn -> ensure_dependencies_unlocked(assets_dir, install_signature(assets_dir)) end,
+      [node()],
+      :infinity
+    )
+  end
 
-    if install_required?(assets_dir, signature) do
-      case run_bun(bun_install_args(assets_dir),
-             cd: assets_dir,
-             into: IO.stream(:stdio, :line),
-             stderr_to_stdout: true
-           ) do
-        {_, 0} -> save_install_cache(assets_dir)
-        {_, status} -> raise "bun install exited with #{status}"
-      end
-    end
+  defp ensure_dependencies_unlocked(assets_dir, signature) do
+    install_dependencies(assets_dir, install_required?(assets_dir, signature))
+  end
+
+  defp install_dependencies(_, false), do: :ok
+
+  defp install_dependencies(assets_dir, true) do
+    run_bun_install(assets_dir, bun_install_args(assets_dir), true)
   end
 
   defp ensure_package_json!(assets_dir) do
@@ -523,6 +527,41 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
   defp run_bun(args, opts) do
     BunRuntime.run(args, opts)
+  end
+
+  defp run_bun_install(assets_dir, args, retry?) do
+    assets_dir
+    |> run_bun_install_result(args)
+    |> handle_bun_install_result(assets_dir, args, retry?)
+  end
+
+  defp run_bun_install_result(assets_dir, args), do: run_bun(args, cd: assets_dir, stderr_to_stdout: true)
+
+  defp handle_bun_install_result({output, 0}, assets_dir, _, _) do
+    IO.write(output)
+    save_install_cache(assets_dir)
+  end
+
+  defp handle_bun_install_result({output, status}, assets_dir, args, retry?) do
+    retry_bun_install(assets_dir, args, retry?, output, status, retryable_bun_install_error?(output))
+  end
+
+  defp retry_bun_install(assets_dir, args, true, _, _, true) do
+    IO.puts("bun install failed while linking packages; removing assets/node_modules and retrying once")
+
+    assets_dir
+    |> Path.join("node_modules")
+    |> File.rm_rf!()
+
+    run_bun_install(assets_dir, args, false)
+  end
+
+  defp retry_bun_install(_, _, _, output, status, _) do
+    raise "bun install exited with #{status}\n#{output}"
+  end
+
+  defp retryable_bun_install_error?(output) do
+    String.contains?(output, "EEXIST") and String.contains?(output, "failed to link package")
   end
 
   defp save_install_cache(assets_dir) do
