@@ -221,11 +221,8 @@ defmodule PhoenixAssetPipeline.Plug do
 
   defp early_hint_attr({_, false}), do: []
   defp early_hint_attr({_, nil}), do: []
-  defp early_hint_attr({name, true}), do: ["; ", early_hint_attr_name(name)]
-  defp early_hint_attr({name, value}), do: ["; ", early_hint_attr_name(name), "=", to_string(value)]
-
-  defp early_hint_attr_name(name) when is_atom(name), do: Atom.to_string(name)
-  defp early_hint_attr_name(name), do: to_string(name)
+  defp early_hint_attr({name, true}), do: ["; ", to_string(name)]
+  defp early_hint_attr({name, value}), do: ["; ", to_string(name), "=", to_string(value)]
 
   defp early_hint_attrs(attrs), do: Enum.map(attrs, &early_hint_attr/1)
 
