@@ -202,10 +202,7 @@ defmodule PhoenixAssetPipeline do
           end)
         end,
         fn ->
-          Map.new(styles, fn {path, css, class_names} ->
-            css = rewrite_classes(css, class_names, classes)
-            {path, %{content: css, digest: digest(css), integrity: integrity(css)}}
-          end)
+          build_style_tags(styles, classes)
         end,
         fn ->
           Enum.reduce(static_files, {%{}, {%{}, false}}, fn {path, content}, {static_files, cache} ->
@@ -291,6 +288,30 @@ defmodule PhoenixAssetPipeline do
     class_counts
     |> Enum.reduce(%{}, &(&1 |> elem(0) |> obfuscate_class(&2) |> elem(1)))
     |> Map.new(&{elem(&1, 1), elem(&1, 0)})
+  end
+
+  defp build_rewritten_style_tags(styles, replacements) when map_size(replacements) == 0 do
+    Map.new(styles, fn {path, css} ->
+      {path, %{content: css, digest: digest(css), integrity: integrity(css)}}
+    end)
+  end
+
+  defp build_rewritten_style_tags(styles, replacements) do
+    Map.new(styles, fn {path, css} ->
+      css = replace_css_variables(css, replacements)
+      {path, %{content: css, digest: digest(css), integrity: integrity(css)}}
+    end)
+  end
+
+  defp build_style_tags(styles, classes) do
+    {styles, counts} =
+      Enum.reduce(styles, {[], %{}}, fn {path, css, class_names}, {styles, counts} ->
+        css = rewrite_classes(css, class_names, classes)
+
+        {[{path, css} | styles], collect_css_variables(css, counts)}
+      end)
+
+    build_rewritten_style_tags(styles, css_variable_replacements(counts))
   end
 
   defp cached_classes(class_counts) do
@@ -393,6 +414,154 @@ defmodule PhoenixAssetPipeline do
 
     Enum.sort(tags)
   end
+
+  defp collect_css_variables(css, counts) do
+    collect_css_variables(css, 0, byte_size(css), counts)
+  end
+
+  defp collect_css_variables(_, index, size, counts) when index >= size, do: counts
+
+  defp collect_css_variables(css, index, size, counts) do
+    collect_css_variables(css, index, size, counts, :binary.at(css, index))
+  end
+
+  defp collect_css_variables(css, index, size, counts, byte) when byte == ?\" or byte == ?' do
+    collect_css_variables(css, skip_css_string(css, index, size), size, counts)
+  end
+
+  defp collect_css_variables(css, index, size, counts, ?-) do
+    collect_css_variable(css, index, size, counts, css_variable(css, index, size))
+  end
+
+  defp collect_css_variables(css, index, size, counts, _) do
+    collect_css_variables(css, index + 1, size, counts)
+  end
+
+  defp collect_css_variable(css, index, size, counts, :error) do
+    collect_css_variables(css, index + 1, size, counts)
+  end
+
+  defp collect_css_variable(css, index, size, counts, stop) do
+    collect_css_variables(
+      css,
+      stop,
+      size,
+      Map.update(counts, binary_part(css, index, stop - index), 1, &(&1 + 1))
+    )
+  end
+
+  defp css_variable(css, index, size) when index + 2 < size do
+    css_variable(
+      css,
+      index,
+      size,
+      :binary.at(css, index + 1),
+      :binary.at(css, index + 2),
+      css_variable_escaped?(css, index)
+    )
+  end
+
+  defp css_variable(_, _, _), do: :error
+
+  defp css_variable(css, index, size, ?-, byte, false) do
+    css_variable(css, index, size, css_variable_byte?(byte))
+  end
+
+  defp css_variable(_, _, _, _, _, _), do: :error
+
+  defp css_variable(css, index, size, true) do
+    stop = css_variable_stop(css, index + 2, size)
+
+    css_variable_context(css, index, stop, size, css_variable_context?(css, index, stop, size))
+  end
+
+  defp css_variable(_, _, _, false), do: :error
+
+  defp css_variable_byte?(byte) do
+    (byte >= ?a and byte <= ?z) or
+      (byte >= ?A and byte <= ?Z) or
+      (byte >= ?0 and byte <= ?9) or
+      byte == ?- or
+      byte == ?_
+  end
+
+  defp css_variable_context(_, _, stop, _, true), do: stop
+  defp css_variable_context(_, _, _, _, false), do: :error
+
+  defp css_variable_context?(css, index, stop, size) do
+    css_variable_declaration?(css, index, stop, size) or
+      css_variable_property_rule?(css, index, stop, size) or
+      css_variable_var_function?(css, index)
+  end
+
+  defp css_variable_declaration?(css, index, stop, size) do
+    next = skip_css_whitespace(css, stop, size)
+    previous = skip_css_whitespace_back(css, index - 1)
+
+    next < size and
+      :binary.at(css, next) == ?: and
+      (previous < 0 or
+         :binary.at(css, previous) == ?{ or
+         :binary.at(css, previous) == ?; or
+         :binary.at(css, previous) == ?()
+  end
+
+  defp css_variable_escaped?(_, 0), do: false
+  defp css_variable_escaped?(css, index), do: :binary.at(css, index - 1) == ?\\
+
+  defp css_variable_property_rule?(css, index, stop, size) do
+    next = skip_css_whitespace(css, stop, size)
+    token_end = skip_css_whitespace_back(css, index - 1)
+    token_start = token_end - 8
+
+    next < size and
+      :binary.at(css, next) == ?{ and
+      token_start >= 0 and
+      binary_part(css, token_start, 9) == "@property" and
+      (token_start == 0 or not css_variable_byte?(:binary.at(css, token_start - 1)))
+  end
+
+  defp css_variable_replacements(counts) do
+    {short_names, variables} =
+      Enum.reduce(counts, {%{}, []}, fn {<<"--", name::binary>> = variable, count}, {short_names, variables} ->
+        {Map.put(short_names, name, name), [{variable, name, count} | variables]}
+      end)
+
+    variables
+    |> Enum.sort_by(fn {variable, _, count} -> {-byte_size(variable) * count, variable} end)
+    |> Enum.reduce({short_names, %{}}, fn {variable, name, _}, {short_names, replacements} ->
+      {short_name, short_names} = obfuscate_class(name, short_names)
+      replacement = "--" <> short_name
+
+      put_css_variable_replacement(short_names, replacements, variable, replacement)
+    end)
+    |> elem(1)
+  end
+
+  defp css_variable_stop(css, index, size) when index < size do
+    css_variable_stop(css, index, size, css_variable_byte?(:binary.at(css, index)))
+  end
+
+  defp css_variable_stop(_, index, _), do: index
+
+  defp css_variable_stop(css, index, size, true), do: css_variable_stop(css, index + 1, size)
+  defp css_variable_stop(_, index, _, false), do: index
+
+  defp css_variable_var_function?(css, index) do
+    open = skip_css_whitespace_back(css, index - 1)
+
+    open >= 3 and
+      :binary.at(css, open) == ?( and
+      binary_part(css, open - 3, 3) == "var" and
+      (open == 3 or not css_variable_byte?(:binary.at(css, open - 4)))
+  end
+
+  defp css_whitespace?(?\s), do: true
+  defp css_whitespace?(?\t), do: true
+  defp css_whitespace?(?\n), do: true
+  defp css_whitespace?(?\r), do: true
+  defp css_whitespace?(?\f), do: true
+  defp css_whitespace?(_), do: false
 
   defp digested_path(digest, extname), do: digest <> extname
 
@@ -562,23 +731,117 @@ defmodule PhoenixAssetPipeline do
     Enum.reduce(modules, %{}, &put_resolved_class_descriptors(&1, &2, classes))
   end
 
-  defp rewrite_classes(css, class_names, classes) do
-    replacements = class_replacements(class_names, classes)
-
-    if map_size(replacements) == 0 do
-      css
-    else
-      pattern =
-        replacements
-        |> Map.keys()
-        |> Enum.sort_by(&byte_size/1, :desc)
-        |> Enum.map_join("|", &Regex.escape/1)
-
-      regex = Regex.compile!(pattern)
-
-      Regex.replace(regex, css, &Map.fetch!(replacements, &1))
-    end
+  defp replace_css_variables(css, replacements) do
+    replace_css_variables(css, 0, 0, byte_size(css), replacements, [])
   end
+
+  defp replace_css_variables(css, index, _, size, _, []) when index >= size, do: css
+
+  defp replace_css_variables(css, index, last, size, _, chunks) when index >= size do
+    chunks
+    |> then(&[binary_part(css, last, size - last) | &1])
+    |> Enum.reverse()
+    |> IO.iodata_to_binary()
+  end
+
+  defp replace_css_variables(css, index, last, size, replacements, chunks) do
+    replace_css_variables(css, index, last, size, replacements, chunks, :binary.at(css, index))
+  end
+
+  defp replace_css_variables(css, index, last, size, replacements, chunks, byte) when byte == ?\" or byte == ?' do
+    replace_css_variables(css, skip_css_string(css, index, size), last, size, replacements, chunks)
+  end
+
+  defp replace_css_variables(css, index, last, size, replacements, chunks, ?-) do
+    replace_css_variable(css, index, last, size, replacements, chunks, css_variable(css, index, size))
+  end
+
+  defp replace_css_variables(css, index, last, size, replacements, chunks, _) do
+    replace_css_variables(css, index + 1, last, size, replacements, chunks)
+  end
+
+  defp replace_css_variable(css, index, last, size, replacements, chunks, :error) do
+    replace_css_variables(css, index + 1, last, size, replacements, chunks)
+  end
+
+  defp replace_css_variable(css, index, last, size, replacements, chunks, stop) do
+    replace_css_variable(
+      css,
+      index,
+      last,
+      size,
+      replacements,
+      chunks,
+      stop,
+      Map.fetch(replacements, binary_part(css, index, stop - index))
+    )
+  end
+
+  defp replace_css_variable(css, index, last, size, replacements, chunks, stop, {:ok, replacement}) do
+    chunks = [replacement, binary_part(css, last, index - last) | chunks]
+    replace_css_variables(css, stop, stop, size, replacements, chunks)
+  end
+
+  defp replace_css_variable(css, _, last, size, replacements, chunks, stop, :error) do
+    replace_css_variables(css, stop, last, size, replacements, chunks)
+  end
+
+  defp rewrite_classes(css, class_names, classes) do
+    rewrite_classes(css, class_replacements(class_names, classes))
+  end
+
+  defp rewrite_classes(css, replacements) when map_size(replacements) == 0, do: css
+
+  defp rewrite_classes(css, replacements) do
+    pattern =
+      replacements
+      |> Map.keys()
+      |> Enum.sort_by(&byte_size/1, :desc)
+      |> Enum.map_join("|", &Regex.escape/1)
+
+    regex = Regex.compile!(pattern)
+
+    Regex.replace(regex, css, &Map.fetch!(replacements, &1))
+  end
+
+  defp skip_css_string(css, index, size) do
+    skip_css_string(css, index + 1, size, :binary.at(css, index))
+  end
+
+  defp skip_css_string(_, index, size, _) when index >= size, do: size
+
+  defp skip_css_string(css, index, size, quote) do
+    skip_css_string(css, index, size, quote, :binary.at(css, index))
+  end
+
+  defp skip_css_string(css, index, size, quote, ?\\), do: skip_css_string(css, index + 2, size, quote)
+  defp skip_css_string(_, index, _, quote, byte) when byte == quote, do: index + 1
+  defp skip_css_string(css, index, size, quote, _), do: skip_css_string(css, index + 1, size, quote)
+
+  defp skip_css_whitespace(css, index, size) when index < size do
+    skip_css_whitespace(css, index, size, css_whitespace?(:binary.at(css, index)))
+  end
+
+  defp skip_css_whitespace(_, index, _), do: index
+
+  defp skip_css_whitespace(css, index, size, true), do: skip_css_whitespace(css, index + 1, size)
+  defp skip_css_whitespace(_, index, _, false), do: index
+
+  defp skip_css_whitespace_back(css, index) when index >= 0 do
+    skip_css_whitespace_back(css, index, css_whitespace?(:binary.at(css, index)))
+  end
+
+  defp skip_css_whitespace_back(_, index), do: index
+
+  defp skip_css_whitespace_back(css, index, true), do: skip_css_whitespace_back(css, index - 1)
+  defp skip_css_whitespace_back(_, index, false), do: index
+
+  defp put_css_variable_replacement(short_names, replacements, variable, replacement)
+       when byte_size(replacement) < byte_size(variable) do
+    {short_names, Map.put(replacements, variable, replacement)}
+  end
+
+  defp put_css_variable_replacement(short_names, replacements, _, _), do: {short_names, replacements}
 
   defp put_manifest(manifest) do
     :ok = Manifest.put(manifest)
