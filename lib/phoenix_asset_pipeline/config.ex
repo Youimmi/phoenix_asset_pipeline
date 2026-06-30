@@ -4,6 +4,7 @@ defmodule PhoenixAssetPipeline.Config do
   @assets_dir Application.compile_env(:phoenix_asset_pipeline, :assets_dir, "assets")
   @otp_app Application.compile_env(:phoenix_asset_pipeline, :otp_app, nil)
   @static_dir Application.compile_env(:phoenix_asset_pipeline, :static_dir, "priv/static")
+  @svg_sprites Application.compile_env(:phoenix_asset_pipeline, :svg_sprites, [])
 
   def assets_dir, do: Path.expand(@assets_dir)
 
@@ -42,6 +43,7 @@ defmodule PhoenixAssetPipeline.Config do
   def precompiled_manifest?, do: Application.get_env(:phoenix_asset_pipeline, :precompiled_manifest, false)
   def project_dir, do: Path.dirname(assets_dir())
   def static_dir, do: Path.expand(@static_dir)
+  def svg_sprites, do: @svg_sprites
 
   def watcher? do
     endpoint = endpoint()

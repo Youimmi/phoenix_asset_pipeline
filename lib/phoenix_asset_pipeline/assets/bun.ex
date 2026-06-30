@@ -1,6 +1,7 @@
 defmodule PhoenixAssetPipeline.Assets.Bun do
   @moduledoc false
 
+  alias PhoenixAssetPipeline.Assets.Sprites
   alias PhoenixAssetPipeline.Bun, as: BunRuntime
   alias PhoenixAssetPipeline.Cache
   alias PhoenixAssetPipeline.Config
@@ -13,8 +14,11 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   const minifyJs = process.env.PHOENIX_ASSET_PIPELINE_MINIFY_JS === "1";
   const buildSvg = process.env.PHOENIX_ASSET_PIPELINE_SVG === "1";
   const entries = (name) => (process.env[name] || "").split("\n").filter(Boolean);
-  const heroIconNames = entries("PHOENIX_ASSET_PIPELINE_HERO_ICON_NAMES");
-  const heroiconsDir = process.env.PHOENIX_ASSET_PIPELINE_HEROICONS_DIR;
+  const spriteSourceEntries = entries("PHOENIX_ASSET_PIPELINE_SVG_SPRITE_SOURCES").map((line) => {
+    const [sprite, mode, source, name] = line.split("\t");
+
+    return { sprite, mode, source, name };
+  });
 
   const emit = (filePath, content) => {
     const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content);
@@ -180,54 +184,108 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     spriter.add(file, name, await Bun.file(file).text());
   };
 
-  const heroIconSource = (name) => {
-    if (name.endsWith("-micro")) {
-      return path.join(heroiconsDir, "16/solid", `${name.slice(0, -6)}.svg`);
-    }
-
-    if (name.endsWith("-mini")) {
-      return path.join(heroiconsDir, "20/solid", `${name.slice(0, -5)}.svg`);
-    }
-
-    if (name.endsWith("-solid")) {
-      return path.join(heroiconsDir, "24/solid", `${name.slice(0, -6)}.svg`);
-    }
-
-    return path.join(heroiconsDir, "24/outline", `${name}.svg`);
-  };
-
-  const addHeroIcon = async (spriter, name) => {
-    const source = heroIconSource(name);
+  const addSpriteEntry = async (spriter, entry) => {
+    const source = entry.source;
 
     if (!(await exists(source))) {
-      throw new Error(`Unknown Heroicon "${name}" (${source})`);
+      throw new Error(`Unknown SVG sprite source "${entry.name}" (${source})`);
     }
 
-    const virtualPath = path.join(assetsDir, ".phoenix_asset_pipeline", `hero-${name}.svg`);
+    const virtualPath = path.join(assetsDir, ".phoenix_asset_pipeline", entry.name);
 
-    spriter.add(virtualPath, `hero-${name}.svg`, await Bun.file(source).text());
+    spriter.add(virtualPath, entry.name, await Bun.file(source).text());
   };
 
-  const emitSprite = async (mode, sourceDir, spriteName, hasExtraSources = false, addExtraSources = async () => {}) => {
-    const files = await spriteSourceFiles(sourceDir);
+  const spriteResource = (result, spriteName) => {
+    let fallback = null;
 
-    if (files.length === 0 && !hasExtraSources) return;
+    for (const mode in result) {
+      for (const name in result[mode]) {
+        const resource = result[mode][name];
+
+        if (path.basename(resource.path) === spriteName) return resource;
+        if (!fallback && resource.contents) fallback = resource;
+      }
+    }
+
+    return fallback;
+  };
+
+  const emitSprite = async (mode, sourceDir, spriteName, extraSources = []) => {
+    const files = sourceDir ? await spriteSourceFiles(sourceDir) : [];
+
+    if (files.length === 0 && extraSources.length === 0) return;
 
     const spriter = await createSpriter(mode, spriteName);
+    const extraNames = sourceDir && extraSources.length > 0 ? new Set() : null;
 
-    for (const file of files) await addSpriteFile(spriter, sourceDir, file);
+    if (extraNames) {
+      for (const entry of extraSources) extraNames.add(entry.name);
+    }
 
-    await addExtraSources(spriter);
+    for (const file of files) {
+      if (!extraNames || !extraNames.has(path.relative(sourceDir, file))) await addSpriteFile(spriter, sourceDir, file);
+    }
+
+    for (const entry of extraSources) await addSpriteEntry(spriter, entry);
 
     const { result } = await spriter.compileAsync();
-    const resources = Object.values(result).flatMap((modeResult) => Object.values(modeResult));
-    const resource =
-      resources.find((item) => path.basename(item.path) === spriteName) ??
-      resources.find((item) => item.contents);
+    const resource = spriteResource(result, spriteName);
 
     if (resource?.contents) {
       emit(`assets/svg/${spriteName}`, resource.contents);
     }
+  };
+
+  const localSpriteSpecs = async () => {
+    const spritesDir = path.join(assetsDir, "svg", "sprites");
+
+    if (!(await exists(spritesDir))) return [];
+
+    const specs = [];
+
+    for (const entry of await readdir(spritesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+
+      specs.push({
+        mode: entry.name === "app" ? "stack" : "symbol",
+        sourceDir: path.join(spritesDir, entry.name),
+        spriteName: `${entry.name}.svg`
+      });
+    }
+
+    return specs.sort((a, b) => a.spriteName.localeCompare(b.spriteName));
+  };
+
+  const spriteKey = (mode, spriteName) => `${mode}\0${spriteName}`;
+
+  const addSpriteGroup = (groups, mode, spriteName, sourceDir = null) => {
+    const key = spriteKey(mode, spriteName);
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        entries: [],
+        mode,
+        sourceDir,
+        spriteName
+      });
+    } else if (sourceDir) {
+      groups.get(key).sourceDir ||= sourceDir;
+    }
+
+    return groups.get(key);
+  };
+
+  const spriteGroups = async () => {
+    const groups = new Map();
+
+    for (const spec of await localSpriteSpecs()) addSpriteGroup(groups, spec.mode, spec.spriteName, spec.sourceDir);
+
+    for (const entry of spriteSourceEntries) {
+      addSpriteGroup(groups, entry.mode, entry.sprite).entries.push(entry);
+    }
+
+    return groups.values();
   };
 
   for (const entry of entries("PHOENIX_ASSET_PIPELINE_JS")) await buildJs(entry);
@@ -236,16 +294,9 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   if (buildSvg) {
     await buildDirectSvgRoot(path.join(assetsDir, "svg"), "");
 
-    await emitSprite("stack", path.join(assetsDir, "svg", "sprites", "app"), "app.svg");
-    await emitSprite(
-      "symbol",
-      path.join(assetsDir, "svg", "sprites", "icons"),
-      "icons.svg",
-      heroIconNames.length > 0,
-      async (spriter) => {
-        for (const name of heroIconNames) await addHeroIcon(spriter, name);
-      }
-    );
+    for (const group of await spriteGroups()) {
+      await emitSprite(group.mode, group.sourceDir, group.spriteName, group.entries);
+    }
   }
   """
 
@@ -254,19 +305,19 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   @install_lock {__MODULE__, :install}
   @install_cache_file "bun_install.term"
   @output_cache_file "bun_assets.term"
-  @output_cache_version 1
+  @output_cache_version 2
 
-  def build(assets_dir, hero_icon_names) do
+  def build(assets_dir, sprite_sources) do
     js_entries = asset_entries(assets_dir, "js", @entry_exts)
     css_entries = asset_entries(assets_dir, "css", [@css_ext])
 
-    if js_entries == [] and css_entries == [] and not svg_sources?(assets_dir, hero_icon_names) do
+    if js_entries == [] and css_entries == [] and not svg_sources?(assets_dir, sprite_sources) do
       []
     else
       BunRuntime.ensure!()
       ensure_package_json!(assets_dir)
       ensure_dependencies(assets_dir)
-      build_cached(assets_dir, js_entries, css_entries, hero_icon_names)
+      build_cached(assets_dir, js_entries, css_entries, sprite_sources)
     end
   end
 
@@ -281,13 +332,15 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     if Config.precompiled_manifest?(), do: :prod, else: :dev
   end
 
-  defp build_cached(assets_dir, js_entries, css_entries, hero_icon_names) do
+  defp build_cached(assets_dir, js_entries, css_entries, sprite_sources) do
     source_cache = read_output_cache()
     install_signature = install_signature(assets_dir)
 
     {js_assets, cache} = cached_js_assets(source_cache, %{}, assets_dir, js_entries, install_signature)
     {css_assets, cache} = cached_css_assets(source_cache, cache, assets_dir, css_entries, install_signature)
-    {svg_assets, cache} = cached_svg_assets(source_cache, cache, assets_dir, hero_icon_names, install_signature)
+
+    {svg_assets, cache} =
+      cached_svg_assets(source_cache, cache, assets_dir, sprite_sources, install_signature)
 
     save_output_cache(cache, source_cache)
 
@@ -323,10 +376,13 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     end
   end
 
-  defp cached_svg_assets(source_cache, next_cache, assets_dir, hero_icon_names, install_signature) do
-    if hero_icon_names != [] or has_svg_source?(Path.join(assets_dir, "svg")) do
-      key = {:svg, asset_mode(), install_signature, svg_signature(assets_dir, hero_icon_names)}
-      cached_output(source_cache, next_cache, key, fn -> run(assets_dir, [], [], hero_icon_names, true) end)
+  defp cached_svg_assets(source_cache, next_cache, assets_dir, sprite_sources, install_signature) do
+    if sprite_sources != [] or has_svg_source?(Path.join(assets_dir, "svg")) do
+      key = {:svg, asset_mode(), install_signature, svg_signature(assets_dir, sprite_sources)}
+
+      cached_output(source_cache, next_cache, key, fn ->
+        run(assets_dir, [], [], sprite_sources, true)
+      end)
     else
       {[], next_cache}
     end
@@ -401,19 +457,6 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     |> Path.expand()
     |> svg_source_in?()
   end
-
-  defp hero_icon_path(assets_dir, name) do
-    base = heroicons_dir(assets_dir)
-
-    cond do
-      String.ends_with?(name, "-micro") -> Path.join([base, "16/solid", String.trim_trailing(name, "-micro") <> ".svg"])
-      String.ends_with?(name, "-mini") -> Path.join([base, "20/solid", String.trim_trailing(name, "-mini") <> ".svg"])
-      String.ends_with?(name, "-solid") -> Path.join([base, "24/solid", String.trim_trailing(name, "-solid") <> ".svg"])
-      true -> Path.join([base, "24/outline", name <> ".svg"])
-    end
-  end
-
-  defp heroicons_dir(assets_dir), do: assets_dir |> project_dir() |> Path.join("deps/heroicons/optimized")
 
   defp install_cache_path do
     Path.join(Config.manifest_cache_dir(), @install_cache_file)
@@ -508,15 +551,14 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     end
   end
 
-  defp run(assets_dir, js_entries, css_entries, hero_icon_names, svg?) do
+  defp run(assets_dir, js_entries, css_entries, sprite_sources, svg?) do
     env = [
       {"NODE_PATH", node_path()},
       {"PHOENIX_ASSET_PIPELINE_CSS", Enum.join(css_entries, "\n")},
-      {"PHOENIX_ASSET_PIPELINE_HERO_ICON_NAMES", Enum.join(hero_icon_names, "\n")},
-      {"PHOENIX_ASSET_PIPELINE_HEROICONS_DIR", heroicons_dir(assets_dir)},
       {"PHOENIX_ASSET_PIPELINE_JS", Enum.join(js_entries, "\n")},
       {"PHOENIX_ASSET_PIPELINE_MINIFY_JS", if(asset_mode() == :prod, do: "1", else: "0")},
-      {"PHOENIX_ASSET_PIPELINE_SVG", if(svg?, do: "1", else: "0")}
+      {"PHOENIX_ASSET_PIPELINE_SVG", if(svg?, do: "1", else: "0")},
+      {"PHOENIX_ASSET_PIPELINE_SVG_SPRITE_SOURCES", sprite_source_env(sprite_sources)}
     ]
 
     case run_bun(["--eval", @script], cd: assets_dir, env: env) do
@@ -574,6 +616,12 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     Cache.write_term!(output_cache_path(), %{assets: cache, version: @output_cache_version})
   end
 
+  defp sprite_source_env(sprite_sources) do
+    Enum.map_join(sprite_sources, "\n", fn {sprite, mode, path, name, _, _, _} ->
+      Enum.join([sprite, mode, path, name], "\t")
+    end)
+  end
+
   defp source_signature(dir) do
     dir
     |> regular_files()
@@ -587,10 +635,10 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     |> Enum.map(&{Path.relative_to(&1, dir), file_digest(&1)})
   end
 
-  defp svg_signature(assets_dir, hero_icon_names) do
+  defp svg_signature(assets_dir, sprite_sources) do
     {
       source_signature(Path.join(assets_dir, "svg"), [".svg"]),
-      Enum.map(hero_icon_names, &{&1, file_digest(hero_icon_path(assets_dir, &1))})
+      Sprites.signature(sprite_sources)
     }
   end
 
@@ -613,8 +661,8 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     end
   end
 
-  defp svg_sources?(assets_dir, hero_icon_names) do
-    hero_icon_names != [] or
+  defp svg_sources?(assets_dir, sprite_sources) do
+    sprite_sources != [] or
       assets_dir |> Path.join("svg") |> has_svg_source?()
   end
 end

@@ -94,13 +94,14 @@ defmodule PhoenixAssetPipeline do
   @doc false
   def source_snapshot(static_dir \\ static_dir()) do
     static_files = static_source_files(static_dir)
+    assets = Assets.sources()
 
     files =
       static_files
-      |> Enum.concat(Assets.build())
+      |> Enum.concat(Assets.build(assets))
       |> unique_files()
 
-    {files, static_signature(static_files)}
+    {files, static_signature(static_files, assets)}
   end
 
   @doc false
@@ -602,9 +603,11 @@ defmodule PhoenixAssetPipeline do
   defp etag(content), do: ~s("#{digest(content)}")
 
   defp current_static_signature do
+    assets = Assets.sources()
+
     static_dir()
     |> static_source_files()
-    |> static_signature()
+    |> static_signature(assets)
   end
 
   defp current_signature do
@@ -851,7 +854,8 @@ defmodule PhoenixAssetPipeline do
   defp run_manifest(static_dir) do
     modules = application_modules()
     static_files = static_source_files(static_dir)
-    static_signature = static_signature(static_files)
+    assets = Assets.sources()
+    static_signature = static_signature(static_files, assets)
     {template_classes, template_signature} = template_snapshot(modules)
     manifest_signature = signature(static_signature, template_signature)
 
@@ -860,7 +864,7 @@ defmodule PhoenixAssetPipeline do
     else
       files =
         static_files
-        |> Enum.concat(Assets.build())
+        |> Enum.concat(Assets.build(assets))
         |> unique_files()
 
       modules
@@ -891,10 +895,10 @@ defmodule PhoenixAssetPipeline do
     end
   end
 
-  defp static_signature(files) do
+  defp static_signature(files, assets) do
     files
     |> Enum.map(fn {path, content} -> {:static, path, digest(content)} end)
-    |> Enum.concat(Assets.signature_terms())
+    |> Enum.concat(Assets.signature_terms(assets))
     |> :erlang.term_to_binary()
     |> digest()
   end

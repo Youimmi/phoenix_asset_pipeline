@@ -3,37 +3,50 @@ defmodule PhoenixAssetPipeline.Assets do
 
   alias PhoenixAssetPipeline.Assets.Bun
   alias PhoenixAssetPipeline.Assets.Images
+  alias PhoenixAssetPipeline.Assets.Sprites
   alias PhoenixAssetPipeline.Config
 
-  @hero_icon_name_pattern ~r/<\.(?:icon|menu_icon)\b[^>]*\bname\s*=\s*"([a-z0-9][a-z0-9-]*)"[^>]*>|\bicon:\s*"([a-z0-9][a-z0-9-]*)"|\bicon_name\([^)]*\),\s*do:\s*"([a-z0-9][a-z0-9-]*)"/
+  def build(source \\ sources())
 
-  def build(assets_dir \\ Config.assets_dir()) do
+  def build(nil), do: []
+  def build(assets_dir) when is_binary(assets_dir), do: assets_dir |> sources() |> build()
+
+  def build({assets_dir, sprites}) do
     assets_dir
-    |> build_assets()
+    |> build_assets(sprites)
     |> unique_assets()
   end
 
-  def signature_terms(assets_dir \\ Config.assets_dir()) do
+  def signature_terms(source \\ sources())
+
+  def signature_terms(nil), do: []
+  def signature_terms(assets_dir) when is_binary(assets_dir), do: assets_dir |> sources() |> signature_terms()
+
+  def signature_terms({assets_dir, sprites}) do
+    asset_source_terms(assets_dir) ++
+      colocated_source_terms() ++
+      Sprites.source_terms(sprites) ++
+      [{:asset_mode, asset_mode()}]
+  end
+
+  def sources(assets_dir \\ Config.assets_dir()) do
     if File.dir?(assets_dir) do
-      asset_source_terms(assets_dir) ++
-        colocated_source_terms() ++
-        hero_source_terms(assets_dir) ++
-        [{:asset_mode, asset_mode()}]
-    else
-      []
+      {Path.expand(assets_dir), Sprites.snapshot(assets_dir)}
     end
   end
 
   def watch_dirs(static_dir \\ Config.static_dir(), assets_dir \\ Config.assets_dir()) do
+    source = sources(assets_dir)
+
     [
       static_dir,
       assets_dir,
       Config.colocated_dir(),
       Path.join(project_dir(assets_dir), "config"),
-      heroicons_dir(assets_dir),
       Path.join(project_dir(assets_dir), "lib"),
       Path.join(project_dir(assets_dir), "priv")
     ]
+    |> Kernel.++(sprite_source_dirs(source))
     |> Enum.map(&Path.expand/1)
     |> Enum.uniq()
     |> Enum.filter(&File.dir?/1)
@@ -50,22 +63,9 @@ defmodule PhoenixAssetPipeline.Assets do
     |> Enum.map(&source_term(:asset, &1, assets_dir))
   end
 
-  defp build_assets(assets_dir) do
-    if File.dir?(assets_dir) do
-      Images.build(assets_dir) ++
-        Bun.build(assets_dir, hero_icon_names(assets_dir))
-    else
-      []
-    end
-  end
-
-  defp collect_hero_icon_names(content, names) do
-    Enum.reduce(Regex.scan(@hero_icon_name_pattern, content), names, fn [_ | captures], names ->
-      case Enum.find(captures, &(&1 != "")) do
-        nil -> names
-        name -> MapSet.put(names, name)
-      end
-    end)
+  defp build_assets(assets_dir, sprites) do
+    Images.build(assets_dir) ++
+      Bun.build(assets_dir, Sprites.entries(sprites))
   end
 
   defp colocated_source_terms do
@@ -91,49 +91,10 @@ defmodule PhoenixAssetPipeline.Assets do
     end
   end
 
-  defp hero_icon_names(assets_dir) do
-    assets_dir
-    |> project_lib_dir()
-    |> source_files(~w(.ex .heex))
-    |> Enum.reduce(MapSet.new(), fn path, names ->
-      path
-      |> File.read!()
-      |> collect_hero_icon_names(names)
-    end)
-    |> MapSet.to_list()
-    |> Enum.sort()
-  end
-
-  defp hero_icon_path(assets_dir, name) do
-    base = heroicons_dir(assets_dir)
-
-    cond do
-      String.ends_with?(name, "-micro") -> Path.join([base, "16/solid", String.trim_trailing(name, "-micro") <> ".svg"])
-      String.ends_with?(name, "-mini") -> Path.join([base, "20/solid", String.trim_trailing(name, "-mini") <> ".svg"])
-      String.ends_with?(name, "-solid") -> Path.join([base, "24/solid", String.trim_trailing(name, "-solid") <> ".svg"])
-      true -> Path.join([base, "24/outline", name <> ".svg"])
-    end
-  end
-
-  defp hero_source_terms(assets_dir) do
-    lib_terms =
-      assets_dir
-      |> project_lib_dir()
-      |> source_files(~w(.ex .heex))
-      |> Enum.map(&source_term(:hero_source, &1, project_dir(assets_dir)))
-
-    icon_terms =
-      assets_dir
-      |> hero_icon_names()
-      |> Enum.map(fn name -> source_term(:heroicon, hero_icon_path(assets_dir, name), heroicons_dir(assets_dir)) end)
-
-    lib_terms ++ icon_terms
-  end
-
-  defp heroicons_dir(assets_dir), do: assets_dir |> project_dir() |> Path.join("deps/heroicons/optimized")
-
   defp project_dir(assets_dir), do: Path.dirname(Path.expand(assets_dir))
-  defp project_lib_dir(assets_dir), do: assets_dir |> project_dir() |> Path.join("lib")
+
+  defp sprite_source_dirs(nil), do: []
+  defp sprite_source_dirs({_, sprites}), do: Sprites.source_dirs(sprites)
 
   defp regular_entry(_, "." <> _), do: []
   defp regular_entry(_, "node_modules"), do: []
@@ -160,12 +121,6 @@ defmodule PhoenixAssetPipeline.Assets do
       {:ok, entries} -> Enum.flat_map(entries, &regular_entry(dir, &1))
       {:error, _} -> []
     end
-  end
-
-  defp source_files(dir, exts) do
-    dir
-    |> regular_files()
-    |> Enum.filter(&(Path.extname(&1) in exts))
   end
 
   defp source_term(type, path, root) do

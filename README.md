@@ -212,8 +212,8 @@ Default inputs:
 - `assets/img/**/*.{png,webp,avif}` -> image helpers
 - `assets/svg/**/*.svg` outside `sprites/` -> optimized SVG image helpers
 - `assets/svg/sprites/app/*.svg` -> stack sprite `app.svg`
-- `assets/svg/sprites/icons/*.svg` -> symbol sprite `icons.svg`
-- used Heroicons from `deps/heroicons/optimized` -> `icons.svg`
+- `assets/svg/sprites/<name>/*.svg` -> symbol sprite `<name>.svg`
+- configured SVG sprite sources -> their configured sprite
 - Phoenix LiveView colocated assets from `_build/<env>/phoenix-colocated/<otp_app>`
 - `priv/static/**` files -> `PhoenixAssetPipeline.Plug.Static`
 
@@ -231,7 +231,7 @@ config :phoenix_asset_pipeline,
   static_dir: "priv/static"
 ```
 
-Heroicons can stay as an application dependency:
+External icon packages can stay as application dependencies:
 
 ```elixir
 {:heroicons,
@@ -241,6 +241,67 @@ Heroicons can stay as an application dependency:
  github: "tailwindlabs/heroicons",
  sparse: "optimized"}
 ```
+
+Flag icons can stay as an application dependency too:
+
+```elixir
+{:flag_icons,
+ app: false,
+ compile: false,
+ depth: 1,
+ github: "lipis/flag-icons",
+ sparse: "flags"}
+```
+
+Add arbitrary external SVG sources to any sprite with `:svg_sprites`.
+Relative paths are resolved from the project root:
+
+```elixir
+config :phoenix_asset_pipeline,
+  svg_sprites: [
+    %{
+      file: "icons.svg",
+      src: "deps/lucide/icons",
+      names: ~w(menu search x),
+      prefix: "lucide-"
+    },
+    %{
+      file: "brands.svg",
+      src: "deps/simple_icons/icons",
+      names: ~w(github x)
+    },
+    %{
+      file: "flags.svg",
+      src: "deps/flag_icons/flags/4x3"
+    },
+    %{
+      file: "icons.svg",
+      src: "deps/heroicons/optimized/24/outline",
+      prefix: "hero-"
+    },
+    %{
+      file: "icons.svg",
+      src: "deps/heroicons/optimized/16/solid",
+      prefix: "hero-",
+      suffix: "-micro"
+    }
+  ]
+```
+
+Configured sprite sources include only SVGs referenced by literal
+`svg_sprite_href("sprite.svg#id")` calls and literal `<.icon ...>` component
+attributes in `.ex` and `.heex` files under `lib` by default. For `icons.svg`,
+literal `icon: "name"` values and `icon_name(...), do: "name"` clauses are also
+detected for common dynamic component patterns.
+
+Use `files: [...]` instead of `names: [...]` when source files do not match
+`<name>.svg`. Fully dynamic icon names and intentionally bundled icons still
+need explicit `names`/`files`.
+Set `mode: :stack` for stack sprites; the default is `:symbol`, except
+`app.svg`, which defaults to `:stack`.
+Use `prefix: "hero-"` with `file: "icons.svg"` to feed the default
+`<.icon>` component. Use `suffix` when the source filename and sprite id should
+differ, for example `x-mark.svg` -> `hero-x-mark-micro`.
 
 ## Build Flow
 
