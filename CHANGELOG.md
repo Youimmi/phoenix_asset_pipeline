@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1
+
+- Add Hex package links and README badges for the changelog and documentation.
+
 ## 2.0.0
 
 ### Breaking changes

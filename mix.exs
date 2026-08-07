@@ -3,7 +3,7 @@ defmodule PhoenixAssetPipeline.MixProject do
 
   @minimum_otp_release 28
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
-  @version "2.0.0"
+  @version "2.0.1"
 
   if String.to_integer(System.otp_release()) < @minimum_otp_release do
     raise("Requires Erlang/OTP #{@minimum_otp_release} or later")
@@ -108,6 +108,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       ],
       licenses: ["MIT"],
       links: %{
+        "Changelog" => "https://hexdocs.pm/phoenix_asset_pipeline/changelog.html",
         "GitHub" => @source_url,
         "Youimmi" => "https://youimmi.com"
       },

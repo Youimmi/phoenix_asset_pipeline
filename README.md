@@ -2,6 +2,8 @@
 
 Asset pipeline for Phoenix and Phoenix LiveView. It builds and caches application assets, minifies CSS/HTML classes, generates image and SVG variants, compresses static files, and serves everything from one manifest.
 
+[![Hex.pm](https://img.shields.io/hexpm/v/phoenix_asset_pipeline.svg)](https://hex.pm/packages/phoenix_asset_pipeline) [![Documentation](https://img.shields.io/badge/documentation-gray)](https://hexdocs.pm/phoenix_asset_pipeline)
+
 ## Requirements
 
 - Elixir 1.18+
