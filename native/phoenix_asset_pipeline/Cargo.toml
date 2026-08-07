@@ -1,0 +1,16 @@
+[package]
+authors = ["Yuri S. <fudoshiki.ari@gmail.com>"]
+edition = "2024"
+name = "phoenix_asset_pipeline"
+version = "2.0.0"
+
+[lib]
+crate-type = ["cdylib"]
+name = "phoenix_asset_pipeline"
+
+[dependencies]
+ahash = "0.8"
+brotli = "8.0"
+lightningcss = { default-features = false, features = ["visitor"], version = "1.0.0-alpha" }
+parcel_selectors = { default-features = false, version = "0.28" }
+rustler = { default-features = false, features = ["derive", "nif_version_2_18"], version = "0.38" }

@@ -16,19 +16,25 @@
 # Also ignore archive artifacts (built via "mix archive.build").
 *.ez
 
-# Ignore package tarball (built via "mix hex.build").
-*.tar
+# Ignore the compiled artifacts of the native code.
+/priv/native/
+
+# Rust binary artifacts.
+/target/
 
 # Temporary files, for example, from tests.
 /tmp/
 
-# Ignore Dialyze files
-*.plt
-*.plt.hash
+# Ignore package tarball (built via "mix hex.build").
+*.tar
 
 # Ignore hidden files
 .*
+!.cargo
 !.formatter.exs
 !.github
 !.gitignore
 !.keep
+
+# The checksum files for precompiled NIFs.
+checksum-*.exs
