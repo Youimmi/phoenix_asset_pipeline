@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.2
 
 - Include non-hidden files under the root `.well-known` static directory automatically.
 
