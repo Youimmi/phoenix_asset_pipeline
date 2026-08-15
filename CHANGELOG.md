@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Include non-hidden files under the root `.well-known` static directory automatically.
+
 ## 2.0.1
 
 - Add Hex package links and README badges for the changelog and documentation.

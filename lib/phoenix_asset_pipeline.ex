@@ -913,7 +913,7 @@ defmodule PhoenixAssetPipeline do
     {Path.relative_to(path, static_dir), content, digest(content)}
   end
 
-  defp static_entry(_, "." <> _, _), do: []
+  defp static_entry(dir, "." <> _ = entry, root) when dir != root or entry != ".well-known", do: []
 
   defp static_entry(dir, entry, root) do
     path = Path.join(dir, entry)

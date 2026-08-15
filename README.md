@@ -141,6 +141,10 @@ config :phoenix_asset_pipeline,
 compile-time settings. `bun_version` must be an exact semantic version and `otp_app` must match the application
 name from `mix.exs`. `manifest_mode` defaults to `:cached`; production builds must set it to `:precompiled`.
 
+Hidden files and directories under `static_dir` are excluded, except for non-hidden files under the root `.well-known`
+directory. This directory is included automatically for standard files such as Digital Asset Links and Apple App Site
+Association. Add `.well-known` to `:only` when filtering requests in `PhoenixAssetPipeline.Plug.Static`.
+
 Files matching `already_compressed_extensions` are served with `Cache-Control: no-transform` so the HTTP server
 does not compress them again dynamically.
 
