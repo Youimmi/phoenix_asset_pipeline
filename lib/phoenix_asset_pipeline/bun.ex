@@ -5,6 +5,7 @@ defmodule PhoenixAssetPipeline.Bun do
 
   @compile {:no_warn_undefined, {CAStore, :file_path, 0}}
   @ensured_key {__MODULE__, :ensured}
+  @fingerprint_chunk_size 1024 * 1024
   @install_lock {__MODULE__, :install}
   @version Application.compile_env!(:phoenix_asset_pipeline, :bun_version)
 
@@ -185,15 +186,37 @@ defmodule PhoenixAssetPipeline.Bun do
   end
 
   defp executable_fingerprint(path) do
-    case File.stat(path, time: :posix) do
-      {:ok, %{ctime: ctime, inode: inode, mode: mode, mtime: mtime, size: size, type: :regular}} ->
-        {size, mtime, ctime, inode, mode}
-
+    with {:ok, %{mode: mode, type: :regular}} <- File.stat(path),
+         {:ok, digest} <- sha256_file(path) do
+      {:sha256, mode, digest}
+    else
       {:ok, %{type: type}} ->
         {:invalid, type}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp sha256_file(path) do
+    case File.open(path, [:read, :binary]) do
+      {:ok, file} ->
+        try do
+          hash_file(file, :crypto.hash_init(:sha256))
+        after
+          File.close(file)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp hash_file(file, hash) do
+    case IO.binread(file, @fingerprint_chunk_size) do
+      :eof -> {:ok, :crypto.hash_final(hash)}
+      {:error, reason} -> {:error, reason}
+      content -> hash_file(file, :crypto.hash_update(hash, content))
     end
   end
 
