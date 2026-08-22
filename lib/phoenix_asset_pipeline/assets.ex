@@ -203,7 +203,8 @@ defmodule PhoenixAssetPipeline.Assets do
 
   defp unique_assets(assets) do
     assets
-    |> Enum.reduce(%{}, fn {path, content}, acc -> Map.put(acc, path, content) end)
+    |> Enum.reduce(%{}, fn asset, acc -> Map.put(acc, elem(asset, 0), asset) end)
+    |> Map.values()
     |> Enum.sort()
   end
 end
