@@ -5,8 +5,8 @@
 - Upgrade the managed Bun runtime to 1.4.0.
 - Accept JPEG image masters, auto-orient them, enforce a configurable pixel limit, and generate configurable density
   variants.
-- Generate Bun ThumbHash placeholders and render them through a configured stylesheet and the manifest-backed
-  `picture` component.
+- Generate obfuscated Bun ThumbHash placeholders, render them through a configured stylesheet and the
+  manifest-backed `picture` component, and remove their backgrounds after images load.
 
 ## 2.0.2
 

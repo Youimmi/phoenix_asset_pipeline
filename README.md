@@ -131,7 +131,9 @@ Brotli, gzip, deflate, and Zstandard representations are stored only when they a
 
 The source image is the master for the highest configured density. With the default `image_densities: [1, 2]`, a
 40×20 source produces a 20×10 base image and a 40×20 `-2x` image in every output format. The `picture` component
-uses a generated image class to display the placeholder as its background until the selected image has loaded.
+uses an obfuscated image class to display the placeholder as its background until the selected image has loaded.
+The pipeline adds the load listener to built JavaScript entries, so pages containing placeholders must load one of
+those entries.
 
 Common options:
 

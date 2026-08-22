@@ -64,8 +64,13 @@ defmodule PhoenixAssetPipeline.Helpers do
       escape_attrs(
         case source do
           %{placeholder_class: class} ->
-            [class: [class, attrs[:class]], src: src(path), srcset: srcset(attrs[:srcset])] ++
-              Keyword.drop(attrs, [:class, :src, :srcset])
+            [
+              {:"data-p", true},
+              {:class, [class, attrs[:class]]},
+              {:src, src(path)},
+              {:srcset, srcset(attrs[:srcset])}
+              | Keyword.drop(attrs, [:class, :src, :srcset, :"data-p"])
+            ]
 
           _ ->
             [src: src(path), srcset: srcset(attrs[:srcset])] ++ Keyword.drop(attrs, [:src, :srcset])
