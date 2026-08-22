@@ -13,7 +13,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   const assetsDir = process.cwd();
   const outputDir = process.env.PHOENIX_ASSET_PIPELINE_OUTPUT_DIR;
   const minifyJs = process.env.PHOENIX_ASSET_PIPELINE_MINIFY_JS === "1";
-  const imagePlaceholderRuntime = Buffer.from(`document.addEventListener("load",({target})=>{if(target instanceof HTMLImageElement&&target.hasAttribute("data-p")&&target.naturalWidth)target.removeAttribute("data-p")},true);for(const image of document.querySelectorAll("img[data-p]"))if(image.complete&&image.naturalWidth)image.removeAttribute("data-p");\n`);
+  const imagePlaceholderRuntime = Buffer.from(`document.addEventListener("load",({target})=>target instanceof HTMLImageElement&&target.removeAttribute("data-p"),true);for(const image of document.querySelectorAll("img[data-p]"))if(image.complete&&image.naturalWidth)image.removeAttribute("data-p");\n`);
   const entries = (name) => (process.env[name] || "").split("\n").filter(Boolean);
   const dropJs = entries("PHOENIX_ASSET_PIPELINE_JS_DROP");
   const buildSvg = process.env.PHOENIX_ASSET_PIPELINE_SVG === "1";
