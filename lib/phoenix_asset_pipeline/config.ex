@@ -7,6 +7,9 @@ defmodule PhoenixAssetPipeline.Config do
                                    {String.downcase(extension), true}
                                  end)
   @assets_dir Application.compile_env(:phoenix_asset_pipeline, :assets_dir, "assets")
+  @image_densities Application.compile_env(:phoenix_asset_pipeline, :image_densities, [1, 2])
+  @image_max_pixels Application.compile_env(:phoenix_asset_pipeline, :image_max_pixels, 40_000_000)
+  @image_stylesheet Application.compile_env(:phoenix_asset_pipeline, :image_stylesheet, "app.css")
   @manifest_mode Application.compile_env(:phoenix_asset_pipeline, :manifest_mode, :cached)
   @otp_app Application.compile_env!(:phoenix_asset_pipeline, :otp_app)
   @static_dir Application.compile_env(:phoenix_asset_pipeline, :static_dir, "priv/static")
@@ -18,9 +21,27 @@ defmodule PhoenixAssetPipeline.Config do
     raise ArgumentError, ":manifest_mode for :phoenix_asset_pipeline must be :cached or :precompiled"
   end
 
+  if not (is_list(@image_densities) and @image_densities != [] and
+            Enum.all?(@image_densities, &(is_integer(&1) and &1 > 0)) and
+            @image_densities == Enum.sort(Enum.uniq(@image_densities)) and 1 in @image_densities) do
+    raise ArgumentError,
+          ":image_densities for :phoenix_asset_pipeline must be an ascending unique list of positive integers containing 1"
+  end
+
+  if not (is_integer(@image_max_pixels) and @image_max_pixels > 0) do
+    raise ArgumentError, ":image_max_pixels for :phoenix_asset_pipeline must be a positive integer"
+  end
+
+  if not (is_binary(@image_stylesheet) and @image_stylesheet != "" and Path.extname(@image_stylesheet) == ".css") do
+    raise ArgumentError, ":image_stylesheet for :phoenix_asset_pipeline must be a non-empty .css path"
+  end
+
   def already_compressed_extensions, do: @already_compressed_extensions
 
   def assets_dir, do: Path.expand(@assets_dir)
+  def image_densities, do: @image_densities
+  def image_max_pixels, do: @image_max_pixels
+  def image_stylesheet, do: @image_stylesheet
 
   def application_ebin_dir do
     case :code.lib_dir(otp_app()) do

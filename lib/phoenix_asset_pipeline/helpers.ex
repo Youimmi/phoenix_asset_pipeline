@@ -57,14 +57,20 @@ defmodule PhoenixAssetPipeline.Helpers do
   """
   def img(path, attrs \\ []) when is_list(attrs) do
     {source_path, fragment} = asset_path(path)
-    extname = Path.extname(source_path)
-    %{path: path} = find!(:image_sources, file_path(source_path, extname))
-    path = path <> fragment
+    source = find!(:image_sources, file_path(source_path, Path.extname(source_path)))
+    path = source.path <> fragment
 
     attrs =
-      [src: src(path), srcset: srcset(attrs[:srcset])]
-      |> Kernel.++(Keyword.drop(attrs, [:src, :srcset]))
-      |> escape_attrs()
+      escape_attrs(
+        case source do
+          %{placeholder_class: class} ->
+            [class: [class, attrs[:class]], src: src(path), srcset: srcset(attrs[:srcset])] ++
+              Keyword.drop(attrs, [:class, :src, :srcset])
+
+          _ ->
+            [src: src(path), srcset: srcset(attrs[:srcset])] ++ Keyword.drop(attrs, [:src, :srcset])
+        end
+      )
 
     {:safe, [?<, "img", attrs, ?/, ?>]}
   end

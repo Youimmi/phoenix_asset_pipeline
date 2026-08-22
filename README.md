@@ -45,7 +45,7 @@ manifest_mode =
 
 config :phoenix, template_engines: [heex: PhoenixAssetPipeline.HTML.Engine]
 config :phoenix_asset_pipeline,
-  bun_version: "1.3.14",
+  bun_version: "1.4.0",
   endpoint: MyAppWeb.Endpoint,
   manifest_mode: manifest_mode,
   otp_app: :my_app
@@ -118,15 +118,20 @@ Default inputs:
 
 - `assets/js/*.{js,ts,jsx,tsx,mjs,cjs}`
 - `assets/css/*.css`
-- `assets/img/**/*.{png,webp,avif}`
+- `assets/img/**/*.{jpg,jpeg,png,webp,avif}`
 - `assets/svg/**/*.svg`
 - `assets/svg/sprites/<name>/*.svg`
 - Phoenix LiveView colocated assets
 - `priv/static/**`
 
 Bun installs application-side dependencies when the package or lockfile changes. Production builds require
-`assets/bun.lock` and install with `--frozen-lockfile`. Image variants use `vix`/libvips. Brotli, gzip, deflate, and
-Zstandard representations are stored only when they are smaller than the original.
+`assets/bun.lock` and install with `--frozen-lockfile`. Image masters are auto-oriented and converted into AVIF,
+WebP, and PNG density variants with `vix`/libvips. Bun generates a ThumbHash placeholder for each image.
+Brotli, gzip, deflate, and Zstandard representations are stored only when they are smaller than the original.
+
+The source image is the master for the highest configured density. With the default `image_densities: [1, 2]`, a
+40×20 source produces a 20×10 base image and a 40×20 `-2x` image in every output format. The `picture` component
+uses a generated image class to display the placeholder as its background until the selected image has loaded.
 
 Common options:
 
@@ -134,12 +139,17 @@ Common options:
 config :phoenix_asset_pipeline,
   already_compressed_extensions: ~w(.avif .png .webp),
   assets_dir: "assets",
+  image_densities: [1, 2],
+  image_max_pixels: 40_000_000,
+  image_stylesheet: "app.css",
   static_dir: "priv/static"
 ```
 
-`already_compressed_extensions`, `assets_dir`, `bun_version`, `manifest_mode`, `otp_app`, and `static_dir` are
+`already_compressed_extensions`, `assets_dir`, `bun_version`, `image_densities`, `image_max_pixels`,
+`image_stylesheet`, `manifest_mode`, `otp_app`, and `static_dir` are
 compile-time settings. `bun_version` must be an exact semantic version and `otp_app` must match the application
-name from `mix.exs`. `manifest_mode` defaults to `:cached`; production builds must set it to `:precompiled`.
+name from `mix.exs`. Generated placeholder rules are appended only to `image_stylesheet`, which must be rendered on
+pages containing images. `manifest_mode` defaults to `:cached`; production builds must set it to `:precompiled`.
 
 Hidden files and directories under `static_dir` are excluded, except for non-hidden files under the root `.well-known`
 directory. This directory is included automatically for standard files such as Digital Asset Links and Apple App Site

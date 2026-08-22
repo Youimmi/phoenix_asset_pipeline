@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.0
+
+- Upgrade the managed Bun runtime to 1.4.0.
+- Accept JPEG image masters, auto-orient them, enforce a configurable pixel limit, and generate configurable density
+  variants.
+- Generate Bun ThumbHash placeholders and render them through a configured stylesheet and the manifest-backed
+  `picture` component.
+
 ## 2.0.2
 
 - Include non-hidden files under the root `.well-known` static directory automatically.

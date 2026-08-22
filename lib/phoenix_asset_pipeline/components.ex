@@ -7,6 +7,11 @@ defmodule PhoenixAssetPipeline.Components do
 
   import Phoenix.Component, except: [embed_templates: 1, embed_templates: 2, sigil_H: 2]
 
+  @image_density_entries Enum.map(PhoenixAssetPipeline.Config.image_densities(), fn
+                           1 -> {"", " 1x"}
+                           density -> {"-#{density}x", " #{density}x"}
+                         end)
+
   attr :class, :any, default: nil
   attr :name, :string, required: true
   attr :sprite, :string, default: "icons.svg"
@@ -45,10 +50,19 @@ defmodule PhoenixAssetPipeline.Components do
   Renders an AVIF/WebP/PNG `<picture>` set from a manifest-backed image base path.
   """
   def picture(assigns) do
+    {avif_srcset, png_srcset, webp_srcset} = density_srcsets(assigns.src)
+
+    assigns =
+      assign(assigns,
+        avif_srcset: avif_srcset,
+        png_srcset: png_srcset,
+        webp_srcset: webp_srcset
+      )
+
     ~H"""
     <picture class={@class} id={@id} phx-update={@phx_update}>
-      {source(srcset: ["#{@src}.avif 1x", "#{@src}-2x.avif 2x"], type: "image/avif")}
-      {source(srcset: ["#{@src}.webp 1x", "#{@src}-2x.webp 2x"], type: "image/webp")}
+      {source(srcset: @avif_srcset, type: "image/avif")}
+      {source(srcset: @webp_srcset, type: "image/webp")}
       {img("#{@src}.png",
         alt: @alt,
         class: @img_class,
@@ -56,10 +70,24 @@ defmodule PhoenixAssetPipeline.Components do
         fetchpriority: @fetchpriority,
         height: @height,
         loading: @loading,
-        srcset: ["#{@src}-2x.png 2x"],
+        srcset: @png_srcset,
         width: @width
       )}
     </picture>
     """
+  end
+
+  defp density_srcsets(src) do
+    :lists.foldr(
+      fn {suffix, density}, {avif, png, webp} ->
+        {
+          [src <> suffix <> ".avif" <> density | avif],
+          [src <> suffix <> ".png" <> density | png],
+          [src <> suffix <> ".webp" <> density | webp]
+        }
+      end,
+      {[], [], []},
+      @image_density_entries
+    )
   end
 end
