@@ -8,9 +8,10 @@ defmodule PhoenixAssetPipeline.Assets.Images do
   alias Vix.Vips.Operation
 
   @cache_file "image_assets.term"
-  @pipeline_version 2
+  @pipeline_version 7
   @image_exts ~w(.avif .jpeg .jpg .png .webp)
   @png_options [compression: 9, strip: true]
+  @placeholder_png_options [Q: 80, compression: 9, dither: 0, palette: true, strip: true]
   @avif_options [Q: 82, compression: :VIPS_FOREIGN_HEIF_COMPRESSION_AV1, effort: 9, strip: true]
   @webp_options [Q: 88, strip: true]
   @placeholder_script ~S"""
@@ -71,19 +72,23 @@ defmodule PhoenixAssetPipeline.Assets.Images do
 
   defp cache_path, do: Path.join(Config.manifest_cache_dir(), @cache_file)
 
-  defp image_variants(path, content) do
+  defp image_assets(path, content, placeholder) do
     image = load_image!(path, content)
     ensure_pixel_limit!(image, path)
     image = auto_orient!(image, path)
     densities = Config.image_densities()
     max_density = List.last(densities)
 
-    Enum.map(densities, fn density ->
-      variant = resize!(image, density / max_density, path)
+    variants =
+      Enum.map(densities, fn density ->
+        variant = resize!(image, density / max_density, path)
 
-      {density, write_image!(variant, ".png", @png_options), write_avif!(variant, @avif_options),
-       write_image!(variant, ".webp", @webp_options)}
-    end)
+        {density, write_image!(variant, ".png", @png_options), write_avif!(variant, @avif_options),
+         write_image!(variant, ".webp", @webp_options)}
+      end)
+
+    [{1, png, _, _} | _] = variants
+    {variants, mask_placeholder(image, png, placeholder, path)}
   end
 
   defp image_source_term?({:asset, "img/" <> relative, _}), do: source?(relative)
@@ -135,6 +140,54 @@ defmodule PhoenixAssetPipeline.Assets.Images do
     end
   end
 
+  defp mask_placeholder(image, png, placeholder, path) do
+    <<"data:image/png;base64,", content::binary>> = placeholder
+    placeholder_image = load_image!(path, Base.decode64!(content))
+    placeholder_image = Operation.resize!(placeholder_image, 1.5, kernel: :VIPS_KERNEL_LINEAR)
+
+    alpha =
+      if Image.has_alpha?(image) do
+        output = load_image!(path, png)
+        width = Image.width(output)
+        height = Image.height(output)
+
+        mask =
+          output
+          |> Operation.extract_band!(Image.bands(output) - 1)
+          |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_MORE, [128])
+
+        {regions, _} =
+          mask
+          |> Operation.embed!(1, 1, width + 2, height + 2)
+          |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_EQUAL, [0])
+          |> Operation.labelregions!()
+
+        [outside] = Operation.getpoint!(regions, 0, 0)
+
+        regions
+        |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_NOTEQ, [outside])
+        |> Operation.extract_area!(1, 1, width, height)
+        |> Operation.resize!(Image.width(placeholder_image) / width,
+          vscale: Image.height(placeholder_image) / height,
+          kernel: :VIPS_KERNEL_LINEAR
+        )
+        |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_MORE, [240])
+        |> Operation.rank!(3, 3, 0)
+      else
+        placeholder_image
+        |> Operation.extract_band!(0)
+        |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_MOREEQ, [0])
+      end
+
+    placeholder_image =
+      [Operation.linear!(alpha, [0], [211], uchar: true), alpha]
+      |> Operation.bandjoin!()
+      |> Operation.copy!(interpretation: :VIPS_INTERPRETATION_B_W)
+
+    "data:image/png;base64," <>
+      Base.encode64(write_image!(placeholder_image, ".png", @placeholder_png_options))
+  end
+
   defp read_cache do
     Cache.read_term(cache_path(), %{}, fn
       {fingerprint, cache} when is_map(cache) ->
@@ -161,6 +214,7 @@ defmodule PhoenixAssetPipeline.Assets.Images do
       Config.image_max_pixels(),
       Config.image_stylesheet(),
       @png_options,
+      @placeholder_png_options,
       @avif_options,
       @webp_options
     }
@@ -203,7 +257,7 @@ defmodule PhoenixAssetPipeline.Assets.Images do
     put_missing_variants(
       missing,
       placeholders,
-      Map.put(cache, digest, {image_variants(path, content), placeholder})
+      Map.put(cache, digest, image_assets(path, content, placeholder))
     )
   end
 

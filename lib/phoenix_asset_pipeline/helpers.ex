@@ -65,11 +65,10 @@ defmodule PhoenixAssetPipeline.Helpers do
         case source do
           %{placeholder_class: class} ->
             [
-              {:"data-p", true},
               {:class, [class, attrs[:class]]},
               {:src, src(path)},
               {:srcset, srcset(attrs[:srcset])}
-              | Keyword.drop(attrs, [:class, :src, :srcset, :"data-p"])
+              | Keyword.drop(attrs, [:class, :src, :srcset])
             ]
 
           _ ->

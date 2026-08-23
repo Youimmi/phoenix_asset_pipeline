@@ -346,11 +346,10 @@ defmodule PhoenixAssetPipeline do
     {
       %{digest: digest, path: "/" <> digested_path, placeholder_class: class_name},
       Map.put_new(placeholder_css, class_name, [
-        "[data-p]",
         class(class_name),
         "{background-image:url(",
         placeholder,
-        ");background-position:center;background-size:cover}"
+        ");background-size:100% 100%}"
       ])
     }
   end

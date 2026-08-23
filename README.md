@@ -126,14 +126,14 @@ Default inputs:
 
 Bun installs application-side dependencies when the package or lockfile changes. Production builds require
 `assets/bun.lock` and install with `--frozen-lockfile`. Image masters are auto-oriented and converted into AVIF,
-WebP, and PNG density variants with `vix`/libvips. Bun generates a ThumbHash placeholder for each image.
+WebP, and PNG density variants with `vix`/libvips. Bun supplies the low-resolution geometry for each light-gray
+placeholder.
 Brotli, gzip, deflate, and Zstandard representations are stored only when they are smaller than the original.
 
 The source image is the master for the highest configured density. With the default `image_densities: [1, 2]`, a
 40×20 source produces a 20×10 base image and a 40×20 `-2x` image in every output format. The `picture` component
-uses an obfuscated image class to display the placeholder as its background until the selected image has loaded.
-The pipeline adds the load listener to built JavaScript entries, so pages containing placeholders must load one of
-those entries.
+uses an obfuscated image class to display the placeholder as its background. Transparent masters receive a
+solid inset silhouette mask, keeping placeholders inside their outer transparent edges.
 
 Common options:
 

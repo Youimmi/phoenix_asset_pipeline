@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.1
+
+- Generate monotone light-gray image placeholders constrained to the solid inset silhouette of transparent masters
+- Remove the image placeholder cleanup runtime from generated JavaScript bundles
+
 ## 2.1.0
 
 - Upgrade the managed Bun runtime to 1.4.0.

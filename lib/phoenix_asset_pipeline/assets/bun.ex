@@ -13,7 +13,6 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   const assetsDir = process.cwd();
   const outputDir = process.env.PHOENIX_ASSET_PIPELINE_OUTPUT_DIR;
   const minifyJs = process.env.PHOENIX_ASSET_PIPELINE_MINIFY_JS === "1";
-  const imagePlaceholderRuntime = Buffer.from(`document.addEventListener("load",({target})=>target instanceof HTMLImageElement&&target.removeAttribute("data-p"),true);for(const image of document.querySelectorAll("img[data-p]"))if(image.complete&&image.naturalWidth)image.removeAttribute("data-p");\n`);
   const entries = (name) => (process.env[name] || "").split("\n").filter(Boolean);
   const dropJs = entries("PHOENIX_ASSET_PIPELINE_JS_DROP");
   const buildSvg = process.env.PHOENIX_ASSET_PIPELINE_SVG === "1";
@@ -113,10 +112,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
       if (ext === ".js" || ext === ".mjs" || ext === ".cjs") {
         const name = `${path.basename(artifactPath, path.extname(artifactPath))}.js`;
-        await emit("js", `assets/js/${name}`, Buffer.concat([
-          imagePlaceholderRuntime,
-          Buffer.from(await artifact.arrayBuffer())
-        ]));
+        await emit("js", `assets/js/${name}`, Buffer.from(await artifact.arrayBuffer()));
       } else if (ext === ".css") {
         await emit("js", `assets/css/${path.basename(artifactPath)}`, Buffer.from(await artifact.arrayBuffer()));
       }
