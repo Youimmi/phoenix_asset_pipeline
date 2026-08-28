@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.1
+
+- Preserve updated adapter state after sending 103 Early Hints
+
 ## 3.0.0
 
 - Extract, obfuscate, and format component attributes ending in `_class` like standard `class` attributes
