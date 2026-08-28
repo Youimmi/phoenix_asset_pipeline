@@ -100,8 +100,6 @@ defmodule PhoenixAssetPipeline.Plug do
     link = cached_early_hints(endpoint, static_url, preloads, links)
 
     inform!(conn, :early_hints, [{"link", link}])
-
-    conn
   end
 
   def early_hints(conn, _), do: conn
