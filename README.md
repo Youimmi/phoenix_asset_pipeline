@@ -9,14 +9,14 @@ Asset pipeline for Phoenix and Phoenix LiveView. It builds and caches applicatio
 - Elixir 1.18+
 - Erlang/OTP 28+
 - Phoenix LiveView
-- Rust 2024
+- Rust 1.98+ (edition 2024)
 - Bun packages declared in the application's `assets/package.json`
 
 ## Installation
 
 ```elixir
 def deps do
-  [{:phoenix_asset_pipeline, "~> 2.0"}]
+  [{:phoenix_asset_pipeline, "~> 3.0"}]
 end
 ```
 
@@ -87,6 +87,12 @@ Render manifest-backed assets:
 </html>
 ```
 
+Include the packaged component utilities in the Tailwind source set from `assets/css/app.css`:
+
+```css
+@source "../../deps/phoenix_asset_pipeline/lib/phoenix_asset_pipeline/components.ex";
+```
+
 Serve static files before the router:
 
 ```elixir
@@ -108,6 +114,22 @@ def button(assigns) do
   <button class={class(["button", {"enabled", @enabled}])}>...</button>
   """
 end
+```
+
+Component attributes ending in `_class` are extracted, obfuscated, and formatted like `class`, so literal values do
+not need an explicit `class(...)` call:
+
+```elixir
+attr :img_class, :any, default: nil
+attr :src, :string, required: true
+
+def avatar(assigns) do
+  ~H"""<img alt="" class={@img_class} src={@src} />"""
+end
+```
+
+```heex
+<.avatar img_class="h-36 object-contain w-auto" src="/avatar.png" />
 ```
 
 The prepare and final compilers share the same mapping, so module values, runtime values, manifest entries, and CSS selectors remain consistent without a second Elixir compilation.
@@ -132,8 +154,9 @@ Brotli, gzip, deflate, and Zstandard representations are stored only when they a
 
 The source image is the master for the highest configured density. With the default `image_densities: [1, 2]`, a
 40×20 source produces a 20×10 base image and a 40×20 `-2x` image in every output format. The `picture` component
-uses an obfuscated image class to display the placeholder as its background. Transparent masters receive a
-solid inset silhouette mask, keeping placeholders inside their outer transparent edges.
+layers a content-addressed placeholder PNG beneath the responsive image, so pages request only the placeholders
+they render. Transparent masters receive a conservative inset mask that preserves internal transparency and stays
+inside their outer transparent edges.
 
 Common options:
 
@@ -143,15 +166,13 @@ config :phoenix_asset_pipeline,
   assets_dir: "assets",
   image_densities: [1, 2],
   image_max_pixels: 40_000_000,
-  image_stylesheet: "app.css",
   static_dir: "priv/static"
 ```
 
 `already_compressed_extensions`, `assets_dir`, `bun_version`, `image_densities`, `image_max_pixels`,
-`image_stylesheet`, `manifest_mode`, `otp_app`, and `static_dir` are
-compile-time settings. `bun_version` must be an exact semantic version and `otp_app` must match the application
-name from `mix.exs`. Generated placeholder rules are appended only to `image_stylesheet`, which must be rendered on
-pages containing images. `manifest_mode` defaults to `:cached`; production builds must set it to `:precompiled`.
+`manifest_mode`, `otp_app`, and `static_dir` are compile-time settings. `bun_version` must be an exact semantic
+version and `otp_app` must match the application name from `mix.exs`. `manifest_mode` defaults to `:cached`;
+production builds must set it to `:precompiled`.
 
 Hidden files and directories under `static_dir` are excluded, except for non-hidden files under the root `.well-known`
 directory. This directory is included automatically for standard files such as Digital Asset Links and Apple App Site

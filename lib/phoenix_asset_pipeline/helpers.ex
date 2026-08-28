@@ -50,6 +50,13 @@ defmodule PhoenixAssetPipeline.Helpers do
     Enum.reduce(template_records, %{}, &build_module_class_descriptors(&1, &2, classes))
   end
 
+  @doc false
+  def image_placeholder(path) do
+    {source_path, _} = asset_path(path)
+    %{placeholder_path: placeholder_path} = find!(:image_sources, source_path)
+    src(placeholder_path)
+  end
+
   @doc """
   Returns a safe `<img>` tag for a manifest-backed image path.
 
@@ -57,24 +64,10 @@ defmodule PhoenixAssetPipeline.Helpers do
   """
   def img(path, attrs \\ []) when is_list(attrs) do
     {source_path, fragment} = asset_path(path)
-    source = find!(:image_sources, file_path(source_path, Path.extname(source_path)))
-    path = source.path <> fragment
+    %{path: path} = find!(:image_sources, file_path(source_path, Path.extname(source_path)))
 
     attrs =
-      escape_attrs(
-        case source do
-          %{placeholder_class: class} ->
-            [
-              {:class, [class, attrs[:class]]},
-              {:src, src(path)},
-              {:srcset, srcset(attrs[:srcset])}
-              | Keyword.drop(attrs, [:class, :src, :srcset])
-            ]
-
-          _ ->
-            [src: src(path), srcset: srcset(attrs[:srcset])] ++ Keyword.drop(attrs, [:src, :srcset])
-        end
-      )
+      escape_attrs([src: src(path <> fragment), srcset: srcset(attrs[:srcset])] ++ Keyword.drop(attrs, [:src, :srcset]))
 
     {:safe, [?<, "img", attrs, ?/, ?>]}
   end
@@ -376,8 +369,14 @@ defmodule PhoenixAssetPipeline.Helpers do
   end
 
   defp put_asset_urls(entries, urls, endpoint, static_url) do
-    Enum.reduce(entries, urls, fn {_, %{path: path}}, urls ->
-      Map.put(urls, path, asset_url(endpoint, static_url, path))
+    Enum.reduce(entries, urls, fn
+      {_, %{path: path, placeholder_path: placeholder_path}}, urls ->
+        urls
+        |> Map.put(path, asset_url(endpoint, static_url, path))
+        |> Map.put(placeholder_path, asset_url(endpoint, static_url, placeholder_path))
+
+      {_, %{path: path}}, urls ->
+        Map.put(urls, path, asset_url(endpoint, static_url, path))
     end)
   end
 

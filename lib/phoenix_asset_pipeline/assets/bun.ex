@@ -540,7 +540,10 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   end
 
   defp lib_signature([], _), do: []
-  defp lib_signature(_, assets_dir), do: source_signature(project_lib_dir(assets_dir), ~w(.ex .heex))
+
+  defp lib_signature(_, assets_dir) do
+    {PhoenixAssetPipeline.Components.module_info(:md5), source_signature(project_lib_dir(assets_dir), ~w(.ex .heex))}
+  end
 
   defp select_assets(true, built, _), do: built
   defp select_assets(false, _, cached), do: cached

@@ -173,10 +173,16 @@ defmodule PhoenixAssetPipeline do
           contents = put_asset_content(contents, digest, content, compressible?(path, content), false, true)
           {images, scripts, styles, static_files, contents}
 
-        {"assets/img/" <> path, content, digest, {:image_placeholder, _} = metadata},
+        {"assets/img/" <> path, content, digest, {:image_placeholder, placeholder}},
         {images, scripts, styles, static_files, contents} ->
-          images = [{path, digest, MIME.from_path(path), metadata} | images]
-          contents = put_asset_content(contents, digest, content, compressible?(path, content), false, false)
+          placeholder_digest = digest(placeholder)
+          images = [{path, digest, MIME.from_path(path), {:image_placeholder, placeholder_digest}} | images]
+
+          contents =
+            contents
+            |> put_asset_content(digest, content, compressible?(path, content), false, false)
+            |> put_asset_content(placeholder_digest, placeholder, false, false, false)
+
           {images, scripts, styles, static_files, contents}
 
         {"assets/img/" <> path, content, digest}, {images, scripts, styles, static_files, contents} ->
@@ -195,7 +201,7 @@ defmodule PhoenixAssetPipeline do
           {images, scripts, styles, static_files, contents}
       end)
 
-    {class_counts, fixed_classes} = class_counts(styles, template_records, images)
+    {class_counts, fixed_classes} = class_counts(styles, template_records)
 
     classes = cached_classes(class_counts, fixed_classes)
 
@@ -204,9 +210,9 @@ defmodule PhoenixAssetPipeline do
     encoding_profile = encoding_profile()
     old_encoded_assets = read_encoded_asset_cache(encoding_profile)
     {encoded_assets, encoded_cache_changed?} = encoded_assets(contents, old_encoded_assets, elem(encoding_profile, 1))
-    {images, image_sources, placeholder_css} = build_image_assets(images, encoded_assets, classes)
+    {images, image_sources} = build_image_assets(images, encoded_assets)
     {scripts, script_tags} = build_script_assets(scripts, encoded_assets)
-    style_tags = build_style_tags(styles, classes, placeholder_css)
+    style_tags = build_style_tags(styles, classes)
     static_files = build_static_assets(static_files, encoded_assets)
 
     save_encoded_asset_cache(encoded_assets, old_encoded_assets, encoding_profile, encoded_cache_changed?)
@@ -294,9 +300,7 @@ defmodule PhoenixAssetPipeline do
     |> Map.new(&{elem(&1, 1), elem(&1, 0)})
   end
 
-  defp build_style_tags(styles, classes, placeholder_css) do
-    image_stylesheet = Config.image_stylesheet()
-
+  defp build_style_tags(styles, classes) do
     variable_replacements =
       styles
       |> Enum.reduce(%{}, fn {_, _, _, _, _, variable_counts}, counts ->
@@ -305,60 +309,45 @@ defmodule PhoenixAssetPipeline do
       |> css_variable_replacements()
       |> Map.to_list()
 
-    tags =
-      Map.new(styles, fn {path, css, marker_classes, _, marker_prefix, _} ->
-        css = rewrite_css(css, marker_prefix, marker_classes, classes, variable_replacements)
-
-        css =
-          if placeholder_css != [] and path == image_stylesheet,
-            do: IO.iodata_to_binary([css | placeholder_css]),
-            else: css
-
-        {path, %{content: css, digest: digest(css), integrity: integrity(css)}}
-      end)
-
-    if placeholder_css != [] and not Map.has_key?(tags, image_stylesheet) do
-      raise ArgumentError, "missing configured image stylesheet assets/css/#{image_stylesheet}"
-    end
-
-    tags
+    Map.new(styles, fn {path, css, marker_classes, _, marker_prefix, _} ->
+      css = rewrite_css(css, marker_prefix, marker_classes, classes, variable_replacements)
+      {path, %{content: css, digest: digest(css), integrity: integrity(css)}}
+    end)
   end
 
-  defp build_image_assets(entries, encoded_assets, classes) do
-    {images, sources, placeholder_css} =
-      Enum.reduce(entries, {%{}, %{}, %{}}, fn
-        {path, digest, content_type, metadata}, {images, sources, placeholder_css} ->
-          {data, _, _, _} = Map.fetch!(encoded_assets, digest)
-          digested_path = digested_path(digest, Path.extname(path))
+  defp build_image_assets(entries, encoded_assets) do
+    Enum.reduce(entries, {%{}, %{}}, fn {path, digest, content_type, metadata}, {images, sources} ->
+      {data, _, _, _} = Map.fetch!(encoded_assets, digest)
+      digested_path = digested_path(digest, Path.extname(path))
 
-          image = %{content_type: content_type, data: data, digest: digest}
-          {source, placeholder_css} = image_source(digest, digested_path, metadata, classes, placeholder_css)
+      images =
+        Map.put(images, digested_path, %{content_type: content_type, data: data, digest: digest})
 
-          {Map.put(images, digested_path, image), Map.put(sources, path, source), placeholder_css}
-      end)
+      case metadata do
+        {:image_placeholder, placeholder_digest} ->
+          placeholder_path = digested_path(placeholder_digest, ".png")
 
-    {images, sources, placeholder_css |> Map.values() |> Enum.sort()}
+          images = put_placeholder_image(placeholder_path, images, placeholder_digest, encoded_assets)
+
+          {images,
+           Map.put(sources, path, %{
+             digest: digest,
+             path: "/" <> digested_path,
+             placeholder_path: "/" <> placeholder_path
+           })}
+
+        nil ->
+          {images, Map.put(sources, path, %{digest: digest, path: "/" <> digested_path})}
+      end
+    end)
   end
 
-  defp image_source(digest, digested_path, {:image_placeholder, placeholder}, classes, placeholder_css) do
-    class_name = Map.fetch!(classes, placeholder_class(placeholder))
+  defp put_placeholder_image(path, images, _, _) when is_map_key(images, path), do: images
 
-    {
-      %{digest: digest, path: "/" <> digested_path, placeholder_class: class_name},
-      Map.put_new(placeholder_css, class_name, [
-        class(class_name),
-        "{background-image:url(",
-        placeholder,
-        ");background-size:100% 100%}"
-      ])
-    }
+  defp put_placeholder_image(path, images, digest, encoded_assets) do
+    {data, _, _, _} = Map.fetch!(encoded_assets, digest)
+    Map.put(images, path, %{content_type: "image/png", data: data, digest: digest})
   end
-
-  defp image_source(digest, digested_path, nil, _, placeholder_css) do
-    {%{digest: digest, path: "/" <> digested_path}, placeholder_css}
-  end
-
-  defp placeholder_class(placeholder), do: "image-placeholder-" <> digest(placeholder)
 
   defp build_script_assets(entries, encoded_assets) do
     Enum.reduce(entries, {%{}, %{}}, fn {path, digest}, {scripts, tags} ->
@@ -851,7 +840,7 @@ defmodule PhoenixAssetPipeline do
     end
   end
 
-  defp class_counts(styles, template_records, images) do
+  defp class_counts(styles, template_records) do
     counts =
       Enum.reduce(styles, %{}, fn style, counts ->
         count_css_classes(elem(style, 2), elem(style, 3), counts)
@@ -868,15 +857,6 @@ defmodule PhoenixAssetPipeline do
           }
         end
       )
-
-    counts =
-      Enum.reduce(images, counts, fn
-        {_, _, _, {:image_placeholder, placeholder}}, counts ->
-          Map.update(counts, placeholder_class(placeholder), 1, &(&1 + 1))
-
-        _, counts ->
-          counts
-      end)
 
     {Enum.sort_by(counts, &{-elem(&1, 1), elem(&1, 0)}), fixed_classes}
   end

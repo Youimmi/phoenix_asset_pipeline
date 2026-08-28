@@ -27,7 +27,7 @@ defmodule PhoenixAssetPipeline.Plug do
     {"default-src", ["'self'"]},
     {"form-action", ["'self'"]},
     {"frame-ancestors", ["'self'"]},
-    {"img-src", ["'self'", "data:"]},
+    {"img-src", ["'self'"]},
     {"object-src", ["'none'"]},
     {"report-to", ["default"]},
     {"require-trusted-types-for", ["'script'"]},
@@ -38,7 +38,7 @@ defmodule PhoenixAssetPipeline.Plug do
   @content_security_policy Enum.map_join(@content_security_policy_directives, "; ", fn {directive, values} ->
                              directive <> " " <> Enum.join(values, " ")
                            end)
-  @content_security_policy_before_img_src "base-uri 'none'; default-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' data: "
+  @content_security_policy_before_img_src "base-uri 'none'; default-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' "
   @content_security_policy_before_script_src "; object-src 'none'; report-to default; require-trusted-types-for 'script'; script-src 'strict-dynamic'"
   @content_security_policy_style_src "; style-src"
   @content_security_policy_trusted_types "; trusted-types decodeHTMLEntitiesPolicy default"

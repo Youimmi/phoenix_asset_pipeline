@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.0
+
+- Extract, obfuscate, and format component attributes ending in `_class` like standard `class` attributes
+- Require Rust 1.98 and use buffered integer formatting for CSS marker generation
+- Compress high-density AVIF variants more aggressively while preserving 1x quality
+- Serve monotone light-gray image placeholders as content-addressed PNG assets with inset masks that preserve transparency
+- Remove generated placeholder CSS and `data:` from the default image CSP
+
 ## 2.1.1
 
 - Generate monotone light-gray image placeholders constrained to the solid inset silhouette of transparent masters

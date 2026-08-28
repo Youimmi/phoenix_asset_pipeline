@@ -2,6 +2,7 @@
 authors = ["Yuri S. <fudoshiki.ari@gmail.com>"]
 edition = "2024"
 name = "phoenix_asset_pipeline"
+rust-version = "1.98"
 
 [lib]
 crate-type = ["cdylib"]

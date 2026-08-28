@@ -8,11 +8,12 @@ defmodule PhoenixAssetPipeline.Assets.Images do
   alias Vix.Vips.Operation
 
   @cache_file "image_assets.term"
-  @pipeline_version 7
   @image_exts ~w(.avif .jpeg .jpg .png .webp)
   @png_options [compression: 9, strip: true]
   @placeholder_png_options [Q: 80, compression: 9, dither: 0, palette: true, strip: true]
-  @avif_options [Q: 82, compression: :VIPS_FOREIGN_HEIF_COMPRESSION_AV1, effort: 9, strip: true]
+  @avif_options [compression: :VIPS_FOREIGN_HEIF_COMPRESSION_AV1, effort: 9, strip: true]
+  @avif_1x_options [Q: 82] ++ @avif_options
+  @avif_high_density_options [Q: 55] ++ @avif_options
   @webp_options [Q: 88, strip: true]
   @placeholder_script ~S"""
   const maxPixels = Number(process.env.PHOENIX_ASSET_PIPELINE_IMAGE_MAX_PIXELS);
@@ -83,12 +84,14 @@ defmodule PhoenixAssetPipeline.Assets.Images do
       Enum.map(densities, fn density ->
         variant = resize!(image, density / max_density, path)
 
-        {density, write_image!(variant, ".png", @png_options), write_avif!(variant, @avif_options),
-         write_image!(variant, ".webp", @webp_options)}
+        {density, write_image!(variant, ".png", @png_options),
+         write_avif!(
+           variant,
+           if(density == 1, do: @avif_1x_options, else: @avif_high_density_options)
+         ), write_image!(variant, ".webp", @webp_options)}
       end)
 
-    [{1, png, _, _} | _] = variants
-    {variants, mask_placeholder(image, png, placeholder, path)}
+    {variants, mask_placeholder(image, placeholder, path, max_density)}
   end
 
   defp image_source_term?({:asset, "img/" <> relative, _}), do: source?(relative)
@@ -140,52 +143,43 @@ defmodule PhoenixAssetPipeline.Assets.Images do
     end
   end
 
-  defp mask_placeholder(image, png, placeholder, path) do
+  defp mask_placeholder(image, placeholder, path, max_density) do
     <<"data:image/png;base64,", content::binary>> = placeholder
     placeholder_image = load_image!(path, Base.decode64!(content))
-    placeholder_image = Operation.resize!(placeholder_image, 1.5, kernel: :VIPS_KERNEL_LINEAR)
+    source_width = Image.width(image)
+    source_height = Image.height(image)
+    size = round(max(Image.width(placeholder_image), Image.height(placeholder_image)) * 1.5)
+    scale = size / max(source_width, source_height)
+    width = max(round(source_width * scale), 1)
+    height = max(round(source_height * scale), 1)
 
     alpha =
       if Image.has_alpha?(image) do
-        output = load_image!(path, png)
-        width = Image.width(output)
-        height = Image.height(output)
-
-        mask =
-          output
-          |> Operation.extract_band!(Image.bands(output) - 1)
-          |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_MORE, [128])
-
-        {regions, _} =
-          mask
-          |> Operation.embed!(1, 1, width + 2, height + 2)
-          |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_EQUAL, [0])
-          |> Operation.labelregions!()
-
-        [outside] = Operation.getpoint!(regions, 0, 0)
-
-        regions
-        |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_NOTEQ, [outside])
-        |> Operation.extract_area!(1, 1, width, height)
-        |> Operation.resize!(Image.width(placeholder_image) / width,
-          vscale: Image.height(placeholder_image) / height,
+        image
+        |> Operation.extract_band!(Image.bands(image) - 1)
+        |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_MORE, [128])
+        |> Operation.resize!(width / source_width,
+          vscale: height / source_height,
           kernel: :VIPS_KERNEL_LINEAR
         )
         |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_MORE, [240])
         |> Operation.rank!(3, 3, 0)
       else
-        placeholder_image
-        |> Operation.extract_band!(0)
-        |> Operation.relational_const!(:VIPS_OPERATION_RELATIONAL_MOREEQ, [0])
+        width
+        |> Operation.black!(height)
+        |> Operation.linear!([0], [255], uchar: true)
       end
 
     placeholder_image =
       [Operation.linear!(alpha, [0], [211], uchar: true), alpha]
       |> Operation.bandjoin!()
       |> Operation.copy!(interpretation: :VIPS_INTERPRETATION_B_W)
+      |> Operation.resize!(round(source_width / max_density) / width,
+        vscale: round(source_height / max_density) / height,
+        kernel: :VIPS_KERNEL_NEAREST
+      )
 
-    "data:image/png;base64," <>
-      Base.encode64(write_image!(placeholder_image, ".png", @placeholder_png_options))
+    write_image!(placeholder_image, ".png", @placeholder_png_options)
   end
 
   defp read_cache do
@@ -208,15 +202,10 @@ defmodule PhoenixAssetPipeline.Assets.Images do
     {
       Application.spec(:vix, :vsn),
       Vix.Vips.version(),
-      @pipeline_version,
+      __MODULE__.module_info(:md5),
       BunRuntime.version(),
       Config.image_densities(),
-      Config.image_max_pixels(),
-      Config.image_stylesheet(),
-      @png_options,
-      @placeholder_png_options,
-      @avif_options,
-      @webp_options
+      Config.image_max_pixels()
     }
   end
 

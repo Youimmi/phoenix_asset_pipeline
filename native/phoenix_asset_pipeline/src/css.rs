@@ -1,4 +1,5 @@
 use ahash::{AHashMap, AHashSet, RandomState};
+use core::fmt::NumBuffer;
 use lightningcss::{
     declaration::DeclarationBlock,
     printer::PrinterOptions,
@@ -60,7 +61,13 @@ impl SelectorClassProcessor {
             }
         };
 
-        *class = Ident(format!("{}{index}_", self.marker_prefix).into());
+        let mut buffer = NumBuffer::new();
+        let index = index.format_into(&mut buffer);
+        let mut marker = String::with_capacity(self.marker_prefix.len() + index.len() + 1);
+        marker.push_str(&self.marker_prefix);
+        marker.push_str(index);
+        marker.push('_');
+        *class = Ident(marker.into());
     }
 
     fn process_selector(

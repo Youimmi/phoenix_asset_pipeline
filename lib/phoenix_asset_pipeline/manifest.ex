@@ -740,8 +740,8 @@ defmodule PhoenixAssetPipeline.Manifest do
 
   defp image_sources_valid?(sources) when is_map(sources) do
     Enum.all?(sources, fn
-      {source_path, %{digest: digest, path: path, placeholder_class: class} = source} ->
-        is_binary(source_path) and is_binary(digest) and is_binary(path) and is_binary(class) and
+      {source_path, %{digest: digest, path: path, placeholder_path: placeholder_path} = source} ->
+        is_binary(source_path) and is_binary(digest) and is_binary(path) and is_binary(placeholder_path) and
           map_size(source) == 3
 
       {source_path, %{digest: digest, path: path} = source} ->

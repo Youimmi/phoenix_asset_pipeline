@@ -28,6 +28,10 @@ defmodule PhoenixAssetPipeline.HTML.ClassAttrs do
     |> Compiler.compile(options)
   end
 
+  defp class_attribute?("class"), do: true
+  defp class_attribute?(name) when is_atom(name), do: name |> Atom.to_string() |> class_attribute?()
+  defp class_attribute?(name), do: String.ends_with?(name, "_class")
+
   defp class_value_ast(classes, env) do
     case Macros.__class_value_ast__(classes, env) do
       nil -> :error
@@ -54,25 +58,33 @@ defmodule PhoenixAssetPipeline.HTML.ClassAttrs do
     %{parser | nodes: rewrite_nodes(parser.nodes, env, file)}
   end
 
-  defp rewrite_attribute({"class", {:expr, value, value_meta}, attr_meta}, env, file) do
-    ast = parse_expression!(value, value_meta, file)
+  defp rewrite_attribute({name, {:expr, value, value_meta}, attr_meta} = attribute, env, file) when is_binary(name) do
+    if class_attribute?(name) do
+      ast = parse_expression!(value, value_meta, file)
 
-    case class_value_ast(ast, env) do
-      {:ok, rewritten_ast} ->
-        {"class", {:expr, Macro.to_string(rewritten_ast), value_meta}, attr_meta}
+      case class_value_ast(ast, env) do
+        {:ok, rewritten_ast} ->
+          {name, {:expr, Macro.to_string(rewritten_ast), value_meta}, attr_meta}
 
-      :error ->
-        {"class", {:expr, value, value_meta}, attr_meta}
+        :error ->
+          attribute
+      end
+    else
+      attribute
     end
   end
 
-  defp rewrite_attribute({"class", {:string, value, value_meta}, attr_meta}, env, _) do
-    case class_value_ast(value, env) do
-      {:ok, ast} ->
-        {"class", {:expr, Macro.to_string(ast), expression_meta(value_meta, attr_meta)}, attr_meta}
+  defp rewrite_attribute({name, {:string, value, value_meta}, attr_meta} = attribute, env, _) when is_binary(name) do
+    if class_attribute?(name) do
+      case class_value_ast(value, env) do
+        {:ok, ast} ->
+          {name, {:expr, Macro.to_string(ast), expression_meta(value_meta, attr_meta)}, attr_meta}
 
-      :error ->
-        {"class", {:string, value, value_meta}, attr_meta}
+        :error ->
+          attribute
+      end
+    else
+      attribute
     end
   end
 
@@ -118,10 +130,14 @@ defmodule PhoenixAssetPipeline.HTML.ClassAttrs do
     end)
   end
 
-  defp rewrite_root_entry({key, value}, env) when key in [:class, "class"] do
-    case class_value_ast(value, env) do
-      {:ok, ast} -> {:changed, {key, ast}}
-      :error -> {:same, {key, value}}
+  defp rewrite_root_entry({key, value} = entry, env) when is_atom(key) or is_binary(key) do
+    if class_attribute?(key) do
+      case class_value_ast(value, env) do
+        {:ok, ast} -> {:changed, {key, ast}}
+        :error -> {:same, entry}
+      end
+    else
+      {:same, entry}
     end
   end
 

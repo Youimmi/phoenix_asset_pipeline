@@ -19,10 +19,6 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     end
   end
 
-  defp attr_boundary?(prefix) do
-    prefix == "" or :binary.last(prefix) in ~c"\s\t\r\n<"
-  end
-
   defp append_line(state, chunk) do
     case :binary.match(chunk, "\n") do
       :nomatch -> append_same_line(state, chunk)
@@ -190,7 +186,7 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   end
 
   defp format_tag_class_attributes(source, opts, acc, line) do
-    case :binary.match(source, "class=") do
+    case class_attribute_match(source) do
       :nomatch ->
         [source | acc]
         |> :lists.reverse()
@@ -203,24 +199,19 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
   defp format_class_attribute_match(source, opts, acc, line, index, length) do
     prefix = binary_part(source, 0, index)
+    attribute = binary_part(source, index, length)
+    offset = index + length
+    rest = binary_part(source, offset, byte_size(source) - offset)
+    line = append_line(line, prefix)
 
-    if attr_boundary?(prefix) do
-      offset = index + length
-      rest = binary_part(source, offset, byte_size(source) - offset)
-      line = append_line(line, prefix)
-      indent = elem(line, 0)
-
-      format_class_attribute_value(source, opts, acc, line, prefix, rest, indent, offset)
-    else
-      consume_class_match(source, opts, acc, line, index + byte_size("class"))
-    end
+    format_class_attribute_value(source, opts, acc, line, prefix, attribute, rest, offset)
   end
 
-  defp format_class_attribute_value(source, opts, acc, line, prefix, rest, indent, offset) do
-    case format_attr_value(rest, indent) do
+  defp format_class_attribute_value(source, opts, acc, line, prefix, attribute, rest, offset) do
+    case format_attr_value(rest, elem(line, 0)) do
       {:ok, value, rest} ->
-        line = line |> append_line("class=") |> append_line(value)
-        format_tag_class_attributes(rest, opts, [value, "class=", prefix | acc], line)
+        line = line |> append_line(attribute) |> append_line(value)
+        format_tag_class_attributes(rest, opts, [value, attribute, prefix | acc], line)
 
       :error ->
         consume_class_match(source, opts, acc, line, offset)
@@ -409,6 +400,55 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
     format_tag_class_attributes(tail, opts, [head | acc], append_line(line, head))
   end
+
+  defp class_attribute_match(source), do: class_attribute_match(source, 0, 0, nil)
+
+  defp class_attribute_match(<<char, rest::binary>>, index, 0, nil) when char in ~c"\s\t\r\n" do
+    case class_attribute_size(rest) do
+      nil -> class_attribute_match(rest, index + 1, 0, nil)
+      size -> {index + 1, size}
+    end
+  end
+
+  defp class_attribute_match(<<?{, rest::binary>>, index, depth, nil) do
+    class_attribute_match(rest, index + 1, depth + 1, nil)
+  end
+
+  defp class_attribute_match(<<?}, rest::binary>>, index, depth, nil) when depth > 0 do
+    class_attribute_match(rest, index + 1, depth - 1, nil)
+  end
+
+  defp class_attribute_match(<<quote, rest::binary>>, index, depth, nil) when quote in [?", ?'] do
+    class_attribute_match(rest, index + 1, depth, quote)
+  end
+
+  defp class_attribute_match(<<?\\, _, rest::binary>>, index, depth, quote) when quote in [?", ?'] do
+    class_attribute_match(rest, index + 2, depth, quote)
+  end
+
+  defp class_attribute_match(<<quote, rest::binary>>, index, depth, quote) do
+    class_attribute_match(rest, index + 1, depth, nil)
+  end
+
+  defp class_attribute_match(<<_, rest::binary>>, index, depth, quote) do
+    class_attribute_match(rest, index + 1, depth, quote)
+  end
+
+  defp class_attribute_match("", _, _, _), do: :nomatch
+
+  defp class_attribute_size(source), do: class_attribute_size(source, source, 0)
+
+  defp class_attribute_size(original, <<?=, _::binary>>, size) do
+    name = binary_part(original, 0, size)
+    if name == "class" or String.ends_with?(name, "_class"), do: size + 1
+  end
+
+  defp class_attribute_size(original, <<char, rest::binary>>, size)
+       when char in ?a..?z or char in ?A..?Z or char in ?0..?9 or char in ~c"_.:-" do
+    class_attribute_size(original, rest, size + 1)
+  end
+
+  defp class_attribute_size(_, _, _), do: nil
 
   defp raw_text_close_index(source, tag) do
     closing = "</" <> tag
