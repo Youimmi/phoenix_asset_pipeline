@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.2
+
+- Render image placeholders at 80% opacity
+
 ## 3.0.1
 
 - Preserve updated adapter state after sending 103 Early Hints

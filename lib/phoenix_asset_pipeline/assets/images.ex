@@ -171,7 +171,10 @@ defmodule PhoenixAssetPipeline.Assets.Images do
       end
 
     placeholder_image =
-      [Operation.linear!(alpha, [0], [211], uchar: true), alpha]
+      [
+        Operation.linear!(alpha, [0], [211], uchar: true),
+        Operation.linear!(alpha, [0.8], [0], uchar: true)
+      ]
       |> Operation.bandjoin!()
       |> Operation.copy!(interpretation: :VIPS_INTERPRETATION_B_W)
       |> Operation.resize!(round(source_width / max_density) / width,
