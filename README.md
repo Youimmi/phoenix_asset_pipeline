@@ -181,6 +181,15 @@ Association. Add `.well-known` to `:only` when filtering requests in `PhoenixAss
 Files matching `already_compressed_extensions` are served with `Cache-Control: no-transform` so the HTTP server
 does not compress them again dynamically.
 
+The compile-time `trusted_types` setting replaces the CSP policy allowlist, which defaults to
+`~w(decodeHTMLEntitiesPolicy default)`. For DOMPurify, configure:
+
+```elixir
+config :phoenix_asset_pipeline, trusted_types: ~w(decodeHTMLEntitiesPolicy default dompurify)
+```
+
+Use `secure_browser_headers/1` without editing the returned CSP string to preserve header caching.
+
 ### SVG sprites
 
 Use `svg_sprites` to select SVG files outside `assets/svg/sprites`. Paths are relative to the project root, and

@@ -32,7 +32,8 @@ defmodule PhoenixAssetPipeline.Plug do
     {"report-to", ["default"]},
     {"require-trusted-types-for", ["'script'"]},
     {"script-src", ["'strict-dynamic'"]},
-    {"trusted-types", ["decodeHTMLEntitiesPolicy", "default"]}
+    {"trusted-types",
+     Application.compile_env(:phoenix_asset_pipeline, :trusted_types, ~w(decodeHTMLEntitiesPolicy default))}
   ]
   @content_security_policy_map Map.new(@content_security_policy_directives)
   @content_security_policy Enum.map_join(@content_security_policy_directives, "; ", fn {directive, values} ->
@@ -41,7 +42,8 @@ defmodule PhoenixAssetPipeline.Plug do
   @content_security_policy_before_img_src "base-uri 'none'; default-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' "
   @content_security_policy_before_script_src "; object-src 'none'; report-to default; require-trusted-types-for 'script'; script-src 'strict-dynamic'"
   @content_security_policy_style_src "; style-src"
-  @content_security_policy_trusted_types "; trusted-types decodeHTMLEntitiesPolicy default"
+  @content_security_policy_trusted_types "; trusted-types " <>
+                                           Enum.join(@content_security_policy_map["trusted-types"], " ")
   @csp_skip_path_prefixes Application.compile_env(:phoenix_asset_pipeline, :csp_skip_path_prefixes, [["dev"]])
   @csp_skip_statuses :phoenix_asset_pipeline
                      |> Application.compile_env(:csp_skip_statuses, [])
@@ -176,6 +178,8 @@ defmodule PhoenixAssetPipeline.Plug do
 
   @doc """
   Returns secure browser headers suitable for Phoenix router pipelines.
+
+  The `:trusted_types` application setting configures the policy allowlist at compile time.
   """
   def secure_browser_headers(opts \\ []) do
     headers = %{
@@ -349,7 +353,7 @@ defmodule PhoenixAssetPipeline.Plug do
 
   defp standard_content_security_policy(endpoint, static_url, directives) do
     key = {__MODULE__, :content_security_policy, endpoint}
-    fingerprint = {static_url, directives}
+    fingerprint = {static_url, directives, @content_security_policy}
 
     case :persistent_term.get(key, @header_cache_missing) do
       {^fingerprint, value} ->
