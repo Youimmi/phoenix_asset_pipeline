@@ -46,7 +46,7 @@ defmodule PhoenixAssetPipeline.Assets do
 
     asset_build =
       if bun_required?(asset_signature_terms, sprite_terms),
-        do: {:asset_build, Bun.fingerprint(assets_dir)},
+        do: {:asset_build, Bun.fingerprint(assets_dir, asset_signature_terms, colocated_terms)},
         else: :no_asset_build
 
     image_build = Images.signature(asset_signature_terms)

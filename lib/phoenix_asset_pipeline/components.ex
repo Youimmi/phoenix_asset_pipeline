@@ -39,10 +39,8 @@ defmodule PhoenixAssetPipeline.Components do
   attr :decoding, :string, default: "async"
   attr :fetchpriority, :string, default: "high"
   attr :height, :string, required: true
-  attr :id, :string, required: true
   attr :img_class, :any, default: nil
   attr :loading, :string, default: nil
-  attr :phx_update, :string, default: "ignore"
   attr :src, :string, required: true
   attr :width, :string, required: true
 
@@ -62,7 +60,7 @@ defmodule PhoenixAssetPipeline.Components do
       )
 
     ~H"""
-    <picture class={@class} id={@id} phx-update={@phx_update}>
+    <picture class={@class}>
       {source(srcset: @avif_srcset, type: "image/avif")}
       {source(srcset: @webp_srcset, type: "image/webp")}
       {img(@png_src,

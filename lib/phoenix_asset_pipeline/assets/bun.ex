@@ -458,8 +458,16 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   end
 
   @doc false
-  def fingerprint(assets_dir \\ Config.assets_dir()) do
-    {build_fingerprint(BunRuntime.fingerprint()), dependency_sources_signature(assets_dir)}
+  def fingerprint(assets_dir, asset_terms, colocated_terms) do
+    fingerprint = build_fingerprint(BunRuntime.fingerprint())
+
+    dependencies =
+      fingerprint
+      |> read_output_cache()
+      |> cached_js_dependencies()
+      |> dependency_signature(assets_dir, asset_terms, colocated_terms)
+
+    {fingerprint, dependency_sources_signature(assets_dir), dependencies}
   end
 
   defp asset_entries(assets_dir, dir, exts) do
@@ -576,6 +584,13 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     end
   end
 
+  defp cached_js_dependencies(cache) do
+    Enum.find_value(cache, [], fn
+      {{:js, _, _}, {dependencies, _}} when is_list(dependencies) -> dependencies
+      _ -> nil
+    end)
+  end
+
   defp dependencies_current?([], _), do: true
 
   defp dependencies_current?([{path, digest} | dependencies], source_digests) when is_binary(path) do
@@ -590,6 +605,13 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   end
 
   defp dependency_path!(_, _), do: raise("bun asset build returned an invalid dependency group")
+
+  defp dependency_signature([], _, _, _), do: []
+
+  defp dependency_signature(dependencies, assets_dir, asset_terms, colocated_terms) do
+    source_digests = source_digest_map(dependencies, assets_dir, asset_terms, colocated_terms)
+    Enum.map(dependencies, fn {path, _} -> {path, source_digest(path, source_digests)} end)
+  end
 
   defp dependency_sources_signature(assets_dir) do
     assets_dir = Path.expand(assets_dir)

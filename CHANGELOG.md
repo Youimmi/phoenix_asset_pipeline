@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.0.1
+
+- Rebuild Bun assets when imported dependencies outside configured asset sources change
+- Allow LiveView to update `<.picture>` and remove its required `id`
+- Update Vix to 0.42.0 and bundled libvips to 8.18.7
+
 ## 4.0.0
 
 - Remove image placeholders from `<.picture>`

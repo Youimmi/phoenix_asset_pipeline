@@ -116,7 +116,7 @@ Declare Bun packages in `assets/package.json`. Dependencies are installed when t
 Images are auto-oriented and converted to AVIF, WebP, and PNG with libvips. The source is the highest density: with `image_densities: [1, 2]`, a 40×20 source produces 20×10 and 40×20 variants. `<.picture>` renders responsive sources and a PNG fallback; `width` and `height` reserve space during loading.
 
 ```heex
-<.picture id="hero" src="hero" alt="Welcome" width="640" height="480" />
+<.picture src="hero" alt="Welcome" width="640" height="480" />
 ```
 
 Images default to densities `[1, 2]` and a 40,000,000-pixel input limit. Override `image_densities` or `image_max_pixels` when needed.
