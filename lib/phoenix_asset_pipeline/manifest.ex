@@ -497,6 +497,27 @@ defmodule PhoenixAssetPipeline.Manifest do
     end
   end
 
+  @doc """
+  Builds a generated static file once and keeps its encoded variants in `persistent_term`.
+
+  The generator is a `{module, function, arguments}` tuple returning iodata. It runs
+  on the first request, after the endpoint is started. Concurrent requests share
+  the same build. Production entries live for the lifetime of the VM; cached-mode
+  entries refresh when the generator module is recompiled.
+  """
+  def generated_file(path, {module, function, args} = generator)
+      when is_binary(path) and is_atom(module) and is_atom(function) and is_list(args) do
+    key = {__MODULE__, :generated_file, path, generator}
+    version = if @precompiled?, do: nil, else: module.module_info(:md5)
+
+    cached_generated_file(key, version) ||
+      :global.trans(
+        {key, self()},
+        fn -> cached_generated_file(key, version) || build_generated_file(key, version) end,
+        [node()]
+      )
+  end
+
   if @precompiled? do
     @doc false
     def put_snapshot, do: @snapshot_missing
@@ -598,6 +619,19 @@ defmodule PhoenixAssetPipeline.Manifest do
   defp binaries_valid?([value | values]) when is_binary(value), do: binaries_valid?(values)
   defp binaries_valid?([]), do: true
   defp binaries_valid?(_), do: false
+
+  defp build_generated_file({__MODULE__, :generated_file, path, {module, function, args}} = key, version) do
+    asset = PhoenixAssetPipeline.build_static_file(path, apply(module, function, args))
+    :persistent_term.put(key, {version, asset})
+    asset
+  end
+
+  defp cached_generated_file(key, version) do
+    case :persistent_term.get(key, nil) do
+      {^version, asset} -> asset
+      _ -> nil
+    end
+  end
 
   defp class_descriptor_entries_valid?([{class_name, condition} | entries])
        when is_binary(class_name) and is_integer(condition) do

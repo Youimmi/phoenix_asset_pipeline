@@ -14,7 +14,7 @@ Add the dependency and compilers to `mix.exs`:
 
 ```elixir
 def deps do
-  [{:phoenix_asset_pipeline, "~> 4.0"}]
+  [{:phoenix_asset_pipeline, "~> 4.1"}]
 end
 
 def project do
@@ -124,6 +124,32 @@ Images default to densities `[1, 2]` and a 40,000,000-pixel input limit. Overrid
 Brotli, gzip, deflate, and Zstandard variants are kept only when smaller than the original. Already compressed files use `Cache-Control: no-transform`.
 
 Hidden static files are excluded except for files under the root `.well-known` directory. Add `.well-known` to the static plug's `:only` list when serving it.
+
+### Generated static files
+
+For files such as `robots.txt` and `sitemap.xml` that need the endpoint's runtime
+URL, provide generators in the static plug:
+
+```elixir
+plug PhoenixAssetPipeline.Plug.Static,
+  generated: %{
+    "robots.txt" => {MyAppWeb.Crawlers, :robots, []},
+    "sitemap.xml" => {MyAppWeb.Crawlers, :sitemap, []}
+  },
+  only: MyAppWeb.static_paths()
+```
+
+Include both filenames in `static_paths/0`. Each generator returns iodata and runs
+once on its first request, after the endpoint has started. Encoded contents and
+ETags are shared through `persistent_term`; subsequent requests use the normal
+static-file handling, including conditional requests, byte ranges, and `HEAD`.
+The production manifest stays immutable, and generated files require no disk I/O.
+
+Generated content must be shared by all requests and remain constant for the
+running deployment. Use the configured endpoint URL, not the request's `Host`.
+Development refreshes an entry when its generator module is recompiled; changes
+to runtime configuration require restarting the VM. Generated paths take precedence
+over files with the same path in the manifest.
 
 ### SVG sprites
 

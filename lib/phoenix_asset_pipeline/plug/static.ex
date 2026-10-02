@@ -28,6 +28,13 @@ defmodule PhoenixAssetPipeline.Plug.Static do
       It can be a map with filename as key and content type as value to override
       the default type for matching filenames. Alternatively, it can be `false`
       to opt out of setting the content type header. Defaults to manifest content types.
+
+    * `:generated` - a map from relative paths to `{module, function, arguments}`
+      generators returning iodata. Files are built on their first request and cached
+      in `persistent_term`, using the same compression, ETags, ranges, and HTTP
+      handling as manifest files. Generated paths take precedence over manifest
+      files and must pass `:only` or `:only_matching`. Generators receive no request
+      data and should return content that stays constant for the running deployment.
   """
   @behaviour Plug
 
@@ -77,6 +84,7 @@ defmodule PhoenixAssetPipeline.Plug.Static do
 
     %{
       content_types: content_types(opts),
+      generated: Keyword.get(opts, :generated, %{}),
       only_rules: {MapSet.size(only) == 0 and only_matching == [], only, only_matching}
     }
   end
@@ -487,7 +495,13 @@ defmodule PhoenixAssetPipeline.Plug.Static do
   defp serve_static_file(conn, segments, opts) do
     path = path(segments)
 
-    case Manifest.find(:static_files, path) do
+    asset =
+      case opts.generated do
+        %{^path => generator} -> Manifest.generated_file(path, generator)
+        _ -> Manifest.find(:static_files, path)
+      end
+
+    case asset do
       %{data: _} = asset ->
         serve_static_file(conn, asset, path, opts)
 

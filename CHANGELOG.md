@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.1.0
+
+- Serve runtime-generated static files from `persistent_term` with the existing compression, validators, and range handling
+
 ## 4.0.1
 
 - Rebuild Bun assets when imported dependencies outside configured asset sources change

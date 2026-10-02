@@ -91,6 +91,28 @@ defmodule PhoenixAssetPipeline do
     end
   end
 
+  @doc """
+  Builds one static file from iodata, including the current encoding profile and ETags.
+
+  Does not read or write the on-disk manifest or asset caches.
+  """
+  def build_static_file(path, content) do
+    content = IO.iodata_to_binary(content)
+    digest = digest(content)
+    data = %{"raw" => {content, byte_size(content)}}
+
+    data =
+      if compressible?(path, content),
+        do: Map.merge(data, compress_job(content, elem(@encoding_profile, 1))),
+        else: data
+
+    %{
+      content_type: MIME.from_path(path),
+      data: static_asset_data(data, build_etags(data, digest)),
+      digest: digest
+    }
+  end
+
   @doc false
   def child_spec(opts) do
     %{
