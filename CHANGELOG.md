@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.1.0
+
+- Add generated files to the shared manifest
+
 ## 4.0.1
 
 - Rebuild Bun assets when imported dependencies outside configured asset sources change

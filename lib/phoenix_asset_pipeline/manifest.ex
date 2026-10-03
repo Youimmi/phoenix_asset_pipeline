@@ -4,8 +4,9 @@ defmodule PhoenixAssetPipeline.Manifest do
 
   Without a precompiled manifest, indexed generations are stored in ETS behind
   this GenServer. In production, a generated
-  `PhoenixAssetPipeline.Manifest.Precompiled` module provides one immutable
-  manifest literal.
+  `PhoenixAssetPipeline.Manifest.Precompiled` module provides the build-time
+  manifest. Startup adds generated files and stores the ready manifest in
+  `persistent_term`.
   """
   use GenServer
 
@@ -23,12 +24,13 @@ defmodule PhoenixAssetPipeline.Manifest do
 
   if @precompiled? do
     @compile {:no_warn_undefined, {@precompiled_module, :manifest, 0}}
+    @runtime_manifest_key {__MODULE__, :runtime_manifest}
 
     @doc """
     Reads a nested manifest value by section and key.
     """
     def find(term, key) do
-      case :maps.get(term, @precompiled_module.manifest(), nil) do
+      case get(term) do
         section when is_map(section) -> Map.get(section, key)
         _ -> nil
       end
@@ -39,10 +41,12 @@ defmodule PhoenixAssetPipeline.Manifest do
     """
     def get(term, default \\ nil)
 
-    def get(:manifest, _default), do: @precompiled_module.manifest()
+    def get(:manifest, _default) do
+      :persistent_term.get(@runtime_manifest_key, @precompiled_module.manifest())
+    end
 
     def get(term, default) do
-      :maps.get(term, @precompiled_module.manifest(), default)
+      :maps.get(term, get(:manifest), default)
     end
 
     @impl true
@@ -59,6 +63,7 @@ defmodule PhoenixAssetPipeline.Manifest do
     @doc false
     def start_link(_) do
       ensure_precompiled!()
+      :persistent_term.put(@runtime_manifest_key, build_generated_files(@precompiled_module.manifest()))
       :ignore
     end
 
@@ -149,7 +154,7 @@ defmodule PhoenixAssetPipeline.Manifest do
     Replaces the stored manifest.
     """
     def put(manifest) when is_map(manifest) do
-      GenServer.call(__MODULE__, {:put, manifest})
+      GenServer.call(__MODULE__, {:put, build_generated_files(manifest)})
     end
 
     @doc false
@@ -378,7 +383,7 @@ defmodule PhoenixAssetPipeline.Manifest do
     end
 
     defp load_initial_manifest(state) do
-      replace_manifest(state, cold_manifest())
+      replace_manifest(state, build_generated_files(cold_manifest()))
     end
 
     defp lookup_element(key, default) do
@@ -598,6 +603,15 @@ defmodule PhoenixAssetPipeline.Manifest do
   defp binaries_valid?([value | values]) when is_binary(value), do: binaries_valid?(values)
   defp binaries_valid?([]), do: true
   defp binaries_valid?(_), do: false
+
+  defp build_generated_files(%{static_files: files} = manifest) do
+    files =
+      Enum.reduce(Config.generated(), files, fn {path, {module, function, args}}, files ->
+        Map.put(files, path, PhoenixAssetPipeline.build_static_file(path, apply(module, function, args)))
+      end)
+
+    %{manifest | static_files: files}
+  end
 
   defp class_descriptor_entries_valid?([{class_name, condition} | entries])
        when is_binary(class_name) and is_integer(condition) do

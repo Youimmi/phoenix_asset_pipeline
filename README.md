@@ -14,7 +14,7 @@ Add the dependency and compilers to `mix.exs`:
 
 ```elixir
 def deps do
-  [{:phoenix_asset_pipeline, "~> 4.0"}]
+  [{:phoenix_asset_pipeline, "~> 4.1"}]
 end
 
 def project do
@@ -35,6 +35,10 @@ config :phoenix, template_engines: [heex: PhoenixAssetPipeline.HTML.Engine]
 config :phoenix_asset_pipeline,
   endpoint: MyAppWeb.Endpoint,
   otp_app: :my_app
+
+config :my_app, MyAppWeb.Endpoint,
+  adapter: PhoenixAssetPipeline.EndpointAdapter,
+  server_adapter: Bandit.PhoenixAdapter
 ```
 
 Enable a precompiled manifest in `config/prod.exs`:
@@ -43,11 +47,22 @@ Enable a precompiled manifest in `config/prod.exs`:
 config :phoenix_asset_pipeline, precompiled_manifest: true
 ```
 
-The default is a cached manifest. Use your application's name for `otp_app`. Start `PhoenixAssetPipeline` before the endpoint:
+The default is a cached manifest. Use your application's name for `otp_app`.
+The adapter starts the pipeline after endpoint configuration is ready and before
+the HTTP server. When `server: false`, start the pipeline after the endpoint in
+your application's supervision tree:
 
 ```elixir
-children = [PhoenixAssetPipeline, MyAppWeb.Endpoint]
+children = [MyAppWeb.Endpoint]
+
+children =
+  if Phoenix.Endpoint.server?(:my_app, MyAppWeb.Endpoint),
+    do: children,
+    else: children ++ [PhoenixAssetPipeline]
 ```
+
+Set `server_adapter` to your web server's Phoenix adapter. Bandit remains an
+application dependency.
 
 ## HTML
 
@@ -124,6 +139,35 @@ Images default to densities `[1, 2]` and a 40,000,000-pixel input limit. Overrid
 Brotli, gzip, deflate, and Zstandard variants are kept only when smaller than the original. Already compressed files use `Cache-Control: no-transform`.
 
 Hidden static files are excluded except for files under the root `.well-known` directory. Add `.well-known` to the static plug's `:only` list when serving it.
+
+### Generated static files
+
+For files such as `robots.txt` and `sitemap.xml` that need the endpoint's runtime
+URL, register generators in the pipeline configuration:
+
+```elixir
+config :phoenix_asset_pipeline,
+  generated: %{
+    "robots.txt" => {MyAppWeb.Crawlers, :robots, []},
+    "sitemap.xml" => {MyAppWeb.Crawlers, :sitemap, []}
+  }
+```
+
+Include both filenames in `static_paths/0`. Each generator returns iodata and
+runs during pipeline startup, before the endpoint accepts requests. Generated
+files are added to the manifest's `:static_files` section with the same contents,
+compression, ETags, and HTTP handling as files from disk. Lookups only read ready
+assets; the production manifest is stored in `persistent_term`.
+
+With the startup order above, generators may read runtime application configuration
+and call `MyAppWeb.Endpoint.url/0`. Generated content must be shared by all requests
+and use the configured endpoint URL.
+
+Development rebuilds generated files when the manifest changes, including when
+a generator module is recompiled. Runtime configuration changes require restarting
+the application. Generated paths take precedence over files with the same path.
+A generator failure prevents startup or leaves the previous development manifest
+intact during a rebuild.
 
 ### SVG sprites
 

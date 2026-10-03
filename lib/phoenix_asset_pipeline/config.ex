@@ -7,6 +7,7 @@ defmodule PhoenixAssetPipeline.Config do
                                    {String.downcase(extension), true}
                                  end)
   @assets_dir Application.compile_env(:phoenix_asset_pipeline, :assets_dir, "assets")
+  @generated Application.compile_env(:phoenix_asset_pipeline, :generated, %{})
   @image_densities Application.compile_env(:phoenix_asset_pipeline, :image_densities, [1, 2])
   @image_max_pixels Application.compile_env(:phoenix_asset_pipeline, :image_max_pixels, 40_000_000)
   @otp_app Application.compile_env!(:phoenix_asset_pipeline, :otp_app)
@@ -64,6 +65,7 @@ defmodule PhoenixAssetPipeline.Config do
       raise "missing :endpoint config for :phoenix_asset_pipeline"
   end
 
+  def generated, do: @generated
   def image_densities, do: @image_densities
   def image_max_pixels, do: @image_max_pixels
 
