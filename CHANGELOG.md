@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Reduce memory use when compiling production manifests
+
 ## 4.1.0
 
 - Add generated files to the shared manifest

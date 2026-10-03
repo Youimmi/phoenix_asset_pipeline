@@ -746,16 +746,14 @@ defmodule PhoenixAssetPipeline.Manifest do
   @dialyzer {:nowarn_function, precompiled_beam!: 1}
   defp precompiled_beam!(manifest) do
     module = @precompiled_module
-    manifest_literal = :erl_parse.abstract(manifest)
-    anno = 0
+    function = :cerl.c_fname(:manifest, 0)
 
-    forms = [
-      {:attribute, anno, :module, module},
-      {:attribute, anno, :export, [manifest: 0]},
-      {:function, anno, :manifest, 0, [{:clause, anno, [], [], [manifest_literal]}]}
-    ]
+    forms =
+      :cerl.c_module(:cerl.c_atom(module), [function], [
+        {function, :cerl.c_fun([], :cerl.abstract(manifest))}
+      ])
 
-    case :compile.forms(forms, [:binary, :return_errors, :return_warnings, :no_debug_info]) do
+    case :compile.forms(forms, [:from_core, :binary, :return_errors, :return_warnings, :no_debug_info]) do
       {:ok, ^module, binary} ->
         binary
 
