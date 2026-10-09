@@ -553,8 +553,10 @@ defmodule PhoenixAssetPipeline.Manifest do
     |> Path.dirname()
     |> File.mkdir_p!()
 
-    PhoenixAssetPipeline.Cache.write_atomic!(path, precompiled_beam!(manifest))
+    binary = precompiled_beam!(manifest)
+    PhoenixAssetPipeline.Cache.write_atomic!(path, binary)
     register_precompiled_module!(path)
+    {:module, @precompiled_module} = :code.load_binary(@precompiled_module, String.to_charlist(path), binary)
 
     path
   end

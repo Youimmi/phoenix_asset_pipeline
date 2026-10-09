@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Load the generated manifest immediately so the first production startup succeeds
 - Reduce memory use when compiling production manifests
 
 ## 4.1.0
