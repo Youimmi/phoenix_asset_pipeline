@@ -116,6 +116,27 @@ Include the library's component utilities in `assets/css/app.css`:
 
 The prepare compiler resolves module attributes and component defaults before Elixir compilation. Function and HEEx expressions use the current manifest at runtime.
 
+## Formatting
+
+Enable canonical Tailwind classes in `.formatter.exs`:
+
+```elixir
+[
+  plugins: [Phoenix.LiveView.HTMLFormatter, PhoenixAssetPipeline.HTML.Formatter],
+  tailwind: "assets/css/app.css"
+]
+```
+
+The formatter uses the project's installed `@tailwindcss/node` (4.3 or later),
+which is also included by `@tailwindcss/cli`. It processes literal `class` and
+`*_class` attributes, including conditional classes, in HEEx files and `~H` sigils.
+`mix format --check-formatted` reports required changes without writing files.
+The same plugin works when formatting through an editor.
+
+Classes keep the formatter's existing sorting and grouping rules. Unknown classes
+and conflicting utilities are not removed. Conditions and helper arguments are
+left unchanged. Omit `:tailwind` to only sort and group classes.
+
 ## Assets
 
 Default inputs:

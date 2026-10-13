@@ -1,8 +1,14 @@
 defmodule PhoenixAssetPipeline.HTML.Formatter do
   @moduledoc """
   Formatter plugin for class expressions handled by PhoenixAssetPipeline.
+
+  Set `tailwind: "assets/css/app.css"` in `.formatter.exs` to canonicalize classes
+  using the project's installed Tailwind CSS. Requires `@tailwindcss/node` 4.3+.
   """
   @behaviour Mix.Tasks.Format
+
+  alias Phoenix.LiveView.HTMLFormatter
+  alias PhoenixAssetPipeline.HTML.Tailwind
 
   @class_regex ~r/(?:\[[^\]]*\]|\S)+/
   @raw_text_tags MapSet.new(~w(pre script style textarea title))
@@ -169,10 +175,13 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
     case Code.string_to_quoted(trimmed) do
       {:ok, list} when is_list(list) ->
-        {:ok, "{" <> format_attr_items(process_items(list), indent, opts) <> "}"}
+        {:ok, "{" <> format_attr_items(process_items(list, opts), indent, opts) <> "}"}
 
       {:ok, value} when is_binary(value) ->
         {:ok, "{" <> format_attr_string(value, indent, opts) <> "}"}
+
+      {:ok, _} ->
+        format_dynamic_classes(trimmed, indent, opts)
 
       _ ->
         :error
@@ -195,7 +204,7 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   end
 
   defp format_attr_string(class, indent, opts) do
-    case grouped_class_items(class) do
+    case grouped_class_items(class, opts) do
       [item] ->
         item
 
@@ -204,23 +213,23 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     end
   end
 
-  defp format_attr_value(<<?", _::binary>> = source, indent) do
+  defp format_attr_value(<<?", _::binary>> = source, indent, opts) do
     with {:ok, value, rest} <- take_double_quoted(source) do
-      case grouped_class_items(value) do
+      case grouped_class_items(value, opts) do
         [item] -> {:ok, item, rest}
-        items -> {:ok, "{" <> format_attr_items(items, indent, []) <> "}", rest}
+        items -> {:ok, "{" <> format_attr_items(items, indent, opts) <> "}", rest}
       end
     end
   end
 
-  defp format_attr_value(<<?{, _::binary>> = source, indent) do
+  defp format_attr_value(<<?{, _::binary>> = source, indent, opts) do
     with {:ok, expr, rest} <- take_braced(source),
-         {:ok, value} <- format_attr_expr(expr, indent, []) do
+         {:ok, value} <- format_attr_expr(expr, indent, opts) do
       {:ok, value, rest}
     end
   end
 
-  defp format_attr_value(_, _), do: :error
+  defp format_attr_value(_, _, _), do: :error
 
   defp format_class_attribute_match(source, opts, acc, line, index, length) do
     prefix = binary_part(source, 0, index)
@@ -233,7 +242,7 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   end
 
   defp format_class_attribute_value(source, opts, acc, line, prefix, attribute, rest, offset) do
-    case format_attr_value(rest, elem(line, 0)) do
+    case format_attr_value(rest, elem(line, 0), opts) do
       {:ok, value, rest} ->
         line = line |> append_line(attribute) |> append_line(value)
         format_tag_class_attributes(rest, opts, [value, attribute, prefix | acc], line)
@@ -245,6 +254,70 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
   defp format_class_attributes(source, opts) do
     format_markup(source, opts, [], {"", true}, nil)
+  end
+
+  defp format_class_expression(quoted, nil), do: quoted
+
+  defp format_class_expression({:__block__, meta, [value]}, stylesheet) do
+    {:__block__, meta, [format_class_expression(value, stylesheet)]}
+  end
+
+  defp format_class_expression(value, stylesheet) when is_binary(value) do
+    value |> split_classes() |> Tailwind.canonicalize(stylesheet) |> Enum.join(" ")
+  end
+
+  defp format_class_expression(values, stylesheet) when is_list(values) do
+    Enum.map(values, &format_class_expression(&1, stylesheet))
+  end
+
+  defp format_class_expression({classes, condition}, stylesheet) do
+    {format_class_expression(classes, stylesheet), condition}
+  end
+
+  defp format_class_expression({:{}, meta, [yes, condition, no]}, stylesheet) do
+    {:{}, meta, [format_class_expression(yes, stylesheet), condition, format_class_expression(no, stylesheet)]}
+  end
+
+  defp format_class_expression({:&&, meta, [condition, classes]}, stylesheet) do
+    {:&&, meta, [condition, format_class_expression(classes, stylesheet)]}
+  end
+
+  defp format_class_expression({:||, meta, [left, right]}, stylesheet) do
+    {:||, meta, [format_class_expression(left, stylesheet), format_class_expression(right, stylesheet)]}
+  end
+
+  defp format_class_expression({form, meta, [condition, branches]}, stylesheet) when form in [:if, :unless] do
+    {form, meta,
+     [condition, Enum.map(branches, fn {key, value} -> {key, format_class_expression(value, stylesheet)} end)]}
+  end
+
+  defp format_class_expression(quoted, _), do: quoted
+
+  defp format_dynamic_classes(expr, indent, opts) do
+    if stylesheet = opts[:tailwind] do
+      {quoted, comments} =
+        Code.string_to_quoted_with_comments!(expr,
+          literal_encoder: &{:ok, {:__block__, &2, [&1]}},
+          token_metadata: true
+        )
+
+      formatted = format_class_expression(quoted, stylesheet)
+
+      if formatted == quoted do
+        :error
+      else
+        value =
+          formatted
+          |> Code.quoted_to_algebra(Keyword.put(opts, :comments, comments))
+          |> Inspect.Algebra.format(Keyword.get(opts, :line_length, 98))
+          |> IO.iodata_to_binary()
+          |> String.replace("\n", "\n" <> indent)
+
+        {:ok, "{" <> value <> "}"}
+      end
+    else
+      :error
+    end
   end
 
   defp format_markup("", _, acc, _, _) do
@@ -284,7 +357,15 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   end
 
   defp format_source(source, opts) do
-    format_class_attributes(source, opts)
+    formatted = format_class_attributes(source, opts)
+
+    if opts[:tailwind] do
+      formatted
+      |> HTMLFormatter.format(opts)
+      |> format_class_attributes(Keyword.delete(opts, :tailwind))
+    else
+      formatted
+    end
   end
 
   defp format_tag_class_attributes("", _, acc, _) do
@@ -305,15 +386,16 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     end
   end
 
-  defp grouped_class_items(class) do
+  defp grouped_class_items(class, opts) do
     class
     |> split_classes()
-    |> grouped_classes()
+    |> grouped_classes(opts)
     |> Enum.map(&inspect/1)
   end
 
-  defp grouped_classes(classes) do
+  defp grouped_classes(classes, opts) do
     classes
+    |> Tailwind.canonicalize(opts[:tailwind])
     |> Enum.reject(&(&1 == ""))
     |> Enum.group_by(&score/1)
     |> Enum.sort()
@@ -350,16 +432,16 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     {indent, byte_size(indent) == byte_size(line)}
   end
 
-  defp process_items(list) do
+  defp process_items(list, opts) do
     {binaries, others} = Enum.split_with(list, &is_binary/1)
     classes = Enum.flat_map(binaries, &split_classes/1)
 
     grouped =
       classes
-      |> grouped_classes()
+      |> grouped_classes(opts)
       |> Enum.map(&inspect/1)
 
-    other_strings = Enum.map(others, &Macro.to_string/1)
+    other_strings = Enum.map(others, &(&1 |> format_class_expression(opts[:tailwind]) |> Macro.to_string()))
 
     grouped ++ other_strings
   end

@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.2.0
+
+- Canonicalize Tailwind classes through the HEEx formatter with an optional stylesheet setting
+- Load the generated manifest immediately so the first production startup succeeds
+- Reduce memory use when compiling production manifests
+
 ## 4.1.0
 
 - Add generated files to the shared manifest
