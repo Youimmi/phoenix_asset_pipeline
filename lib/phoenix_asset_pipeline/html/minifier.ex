@@ -82,25 +82,8 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
       <<"&quot;", _::binary>> -> {:ok, "\"", index + 6}
       <<"&QUOT;", _::binary>> -> {:ok, "\"", index + 6}
       <<"&apos;", _::binary>> -> {:ok, "'", index + 6}
-      <<"&APOS;", _::binary>> -> {:ok, "'", index + 6}
       <<"&#", rest::binary>> -> numeric_attr_quote_entity_at(rest, index + 2)
       _ -> :error
-    end
-  end
-
-  defp attribute_fragment?(static) do
-    if contains_angle_bracket?(static) do
-      false
-    else
-      case static do
-        <<first, rest::binary>> when ascii_whitespace?(first) ->
-          rest = skip_ascii_whitespace(rest)
-          {name, _} = take_attr_name(rest)
-          valid_attr_name?(name)
-
-        _ ->
-          false
-      end
     end
   end
 
@@ -165,11 +148,6 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
       collapse_ascii_whitespace(binary, index + 1, size, start, false, acc)
     end
   end
-
-  defp contains_angle_bracket?(<<"<", _::binary>>), do: true
-  defp contains_angle_bracket?(<<">", _::binary>>), do: true
-  defp contains_angle_bracket?(<<_, rest::binary>>), do: contains_angle_bracket?(rest)
-  defp contains_angle_bracket?(<<>>), do: false
 
   defp contains_ascii_uppercase?(<<byte, _::binary>>) when byte in ?A..?Z, do: true
   defp contains_ascii_uppercase?(<<_, rest::binary>>), do: contains_ascii_uppercase?(rest)
@@ -290,6 +268,10 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp format_attr({name, nil, _}), do: [" ", name]
 
+  defp format_attr({"id", value, _}) do
+    [" id=\"", escape_attr_quote(value, ?", "&quot;"), ?"]
+  end
+
   defp format_attr({name, value, _}) do
     if boolean_attr?(name) and ascii_equal?(value, name) do
       [" ", name]
@@ -306,17 +288,74 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
       else: quote_attr_value(value)
   end
 
-  defp format_attrs([]), do: []
-  defp format_attrs([attr]), do: [format_attr(attr)]
+  defp format_attrs([], close), do: {[], close}
 
-  defp format_attrs(attrs) do
-    attrs
-    |> Enum.sort_by(fn {name, _, index} -> {normalize_ascii_lower(name), index} end)
-    |> format_attrs([])
+  defp format_attrs([attr], close) do
+    attrs = [format_attr(attr)]
+    {attrs, opening_tag_close(close, attrs)}
   end
 
-  defp format_attrs([attr | rest], acc), do: format_attrs(rest, [format_attr(attr) | acc])
-  defp format_attrs([], acc), do: :lists.reverse(acc)
+  defp format_attrs(attrs, close) do
+    attrs
+    |> Enum.sort_by(fn {name, _, index} -> {normalize_ascii_lower(name), index} end)
+    |> format_attrs([], close)
+  end
+
+  defp format_attrs([attr | rest], acc, close), do: format_attrs(rest, [format_attr(attr) | acc], close)
+  defp format_attrs([], acc, close), do: {:lists.reverse(acc), opening_tag_close(close, acc)}
+
+  defp heex_context(<<0, rest::binary>>, :text) do
+    [_, rest] = :binary.split(rest, <<0>>)
+    heex_context(rest, :text)
+  end
+
+  defp heex_context("<!--" <> rest, :text) do
+    case take_comment(rest) do
+      {:remove, rest} -> heex_context(rest, :text)
+      {:keep, _, rest} -> heex_context(rest, :text)
+      :error -> :text
+    end
+  end
+
+  defp heex_context("<" <> rest, :text) do
+    case take_tag(rest) do
+      {:ok, _, rest} ->
+        heex_context(rest, :text)
+
+      :error ->
+        {name, _} = take_name(rest)
+        heex_quote_context(rest, name, nil)
+    end
+  end
+
+  defp heex_context(static, :text) do
+    case :binary.match(static, ["<", <<0>>]) do
+      {index, 1} -> heex_context(binary_part(static, index, byte_size(static) - index), :text)
+      :nomatch -> :text
+    end
+  end
+
+  defp heex_context(static, {name, nil}) do
+    case take_tag(static) do
+      {:ok, _, rest} -> heex_context(rest, :text)
+      :error -> heex_quote_context(static, name, nil)
+    end
+  end
+
+  defp heex_context(static, {name, quote} = context) do
+    case :binary.match(static, <<quote>>) do
+      {index, 1} -> heex_context(binary_part(static, index + 1, byte_size(static) - index - 1), {name, nil})
+      :nomatch -> context
+    end
+  end
+
+  defp heex_quote_context(<<quote, rest::binary>>, name, nil) when quote in [?', ?"] do
+    heex_quote_context(rest, name, quote)
+  end
+
+  defp heex_quote_context(<<quote, rest::binary>>, name, quote), do: heex_quote_context(rest, name, nil)
+  defp heex_quote_context(<<_, rest::binary>>, name, quote), do: heex_quote_context(rest, name, quote)
+  defp heex_quote_context("", name, quote), do: {name, quote}
 
   defp interleave_safe_iodata_parts([static | statics], [dynamic | dynamics]) do
     maybe_prepend_static(static, [dynamic | interleave_safe_iodata_parts(statics, dynamics)])
@@ -360,10 +399,18 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     end
   end
 
-  defp minify_heex_static(static) do
+  defp minify_heex_fragments([static]), do: [minify_static_html(static)]
+
+  defp minify_heex_fragments([_, _ | _] = statics) do
+    statics
+    |> minify_heex_static_list([], :text)
+    |> trim_dynamic_boundaries()
+  end
+
+  defp minify_heex_static(static, :text) do
     cond do
-      attribute_fragment?(static) ->
-        static
+      :binary.match(static, <<0>>) != :nomatch ->
+        minify_static_html(static)
 
       open_tag_fragment?(static) and balanced_quotes?(static) ->
         minify_open_tag_fragment(static)
@@ -373,21 +420,51 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     end
   end
 
-  defp minify_heex_static_list([static | rest], acc) do
-    minify_heex_static_list(rest, [minify_heex_static(static) | acc])
+  defp minify_heex_static(static, {name, nil}) do
+    prefix = "<" <> name
+
+    minified =
+      case take_tag(static) do
+        {:ok, _, _} -> minify_static_html(prefix <> static)
+        :error -> if balanced_quotes?(static), do: minify_open_tag_fragment(prefix <> static)
+      end
+
+    if minified,
+      do: binary_part(minified, byte_size(prefix), byte_size(minified) - byte_size(prefix)),
+      else: static
   end
 
-  defp minify_heex_static_list([], acc), do: :lists.reverse(acc)
+  defp minify_heex_static(static, {name, quote}) do
+    case :binary.match(static, <<quote>>) do
+      {index, 1} ->
+        prefix = binary_part(static, 0, index + 1)
+        rest = binary_part(static, index + 1, byte_size(static) - index - 1)
+        prefix <> minify_heex_static(rest, {name, nil})
 
-  defp minify_heex_statics([static]), do: [minify_static_html(static)]
+      :nomatch ->
+        static
+    end
+  end
 
-  defp minify_heex_statics([_, _ | _] = statics) do
+  defp minify_heex_static_list([static | rest], acc, context) do
+    minified = minify_heex_static(static, context)
+    minify_heex_static_list(rest, [minified | acc], heex_context(static, context))
+  end
+
+  defp minify_heex_static_list([], acc, _), do: :lists.reverse(acc)
+
+  defp minify_heex_statics(statics) do
     statics
-    |> minify_heex_static_list([])
-    |> trim_dynamic_boundaries()
+    |> minify_heex_fragments()
+    |> Enum.map(&:binary.replace(&1, <<0>>, "", [:global]))
   end
 
   defp minify_html(<<>>, acc), do: :lists.reverse(acc)
+
+  defp minify_html(<<0, rest::binary>>, acc) do
+    [text, rest] = :binary.split(rest, <<0>>)
+    minify_html(rest, [[0, text, 0] | acc])
+  end
 
   defp minify_html("<!--" <> rest, acc) do
     case take_comment(rest) do
@@ -409,7 +486,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp minify_html(html, acc) do
     {text, rest} = take_text(html)
-    text = collapse_ascii_whitespace(text)
+    text = text |> collapse_ascii_whitespace() |> trim_adjacent_text_space(acc)
 
     if text == "" do
       minify_html(rest, acc)
@@ -447,12 +524,12 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
       :error
     else
       normalized_name = normalize_ascii_lower(name)
-      attrs = parse_attrs(rest)
       void? = void_tag?(normalized_name)
       closed? = self_closing? or void?
       close = if self_closing? and not void?, do: "/>", else: ">"
+      {attrs, close} = format_attrs(parse_attrs(rest), close)
 
-      {:ok, ["<", name, format_attrs(attrs), close], {:open, normalized_name}, closed?}
+      {:ok, ["<", name, attrs, close], {:open, normalized_name}, closed?}
     end
   end
 
@@ -604,6 +681,10 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     end
   end
 
+  defp opening_tag_close("/>", [[_, _, _, value] | _]) when is_binary(value), do: " />"
+
+  defp opening_tag_close(close, _), do: close
+
   defp parse_attrs(rest), do: parse_attrs(rest, 0, [])
 
   defp parse_attrs(rest, index, acc) do
@@ -671,7 +752,20 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     previous = :binary.at(content, size - 2)
 
     ascii_whitespace_byte?(previous) or previous in [?", ?'] or
-      not contains_ascii_whitespace?(binary_part(content, 0, size - 1))
+      self_closing_slash_token?(content, size - 2, false)
+  end
+
+  defp self_closing_slash_token?(_, index, _) when index < 0, do: true
+
+  defp self_closing_slash_token?(content, index, whitespace?) do
+    byte = :binary.at(content, index)
+
+    cond do
+      byte == ?= -> false
+      ascii_whitespace_byte?(byte) -> self_closing_slash_token?(content, index - 1, true)
+      whitespace? -> true
+      true -> self_closing_slash_token?(content, index - 1, false)
+    end
   end
 
   defp skip_ascii_whitespace(<<byte, rest::binary>>) when ascii_whitespace?(byte) do
@@ -837,7 +931,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   end
 
   defp take_text(html) do
-    case :binary.match(html, "<") do
+    case :binary.match(html, ["<", <<0>>]) do
       {0, 1} ->
         {"", html}
 
@@ -860,6 +954,13 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
       take_unquoted_attr_value(binary, index + 1, size)
     end
   end
+
+  defp trim_adjacent_text_space(" " <> rest = text, [previous | _])
+       when is_binary(previous) and byte_size(previous) > 0 do
+    if :binary.last(previous) == ?\s, do: rest, else: text
+  end
+
+  defp trim_adjacent_text_space(text, _), do: text
 
   defp trim_ascii(binary) do
     size = byte_size(binary)

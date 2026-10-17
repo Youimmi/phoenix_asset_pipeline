@@ -1,5 +1,31 @@
 # Changelog
 
+## 5.0.0
+
+- Replace Brotli with compression-only mbrotli and reuse bounded encoder workspaces per dirty scheduler thread
+- Preload only explicitly selected JavaScript entries in early hints, include their integrity hashes, and cache each selection independently
+- Require Elixir 1.20, Erlang/OTP 29, and Phoenix LiveView 1.2; update the Rustler crate to 0.39
+- Require the oriented source pixel width in `<.picture source_width={...}>`, emit accurate width descriptors for every image format, and support responsive `sizes`
+- Keep the highest-density candidate when generated widths coincide, and match libvips rounding for nonuniform density configurations
+- Update the managed Bun runtime to 1.4.3, verify archives and executables with pinned SHA-256 checksums, and type-check TypeScript builds
+- Use OTP's system CA certificates for Bun downloads, with an explicit custom CA bundle option
+- Replace MD5 content identities with SHA-256 and reject symlink traversal or duplicate asset output paths
+- Require one canonical CSP header with compile-time application-specific directives, accept bounded Reporting API batches without logging report contents, and remove manifest race fallbacks
+- Track JavaScript dependencies, package metadata, and inherited compiler configs without rebuilding on unrelated file events
+- Scope Bun caches by asset root and track type-only imports, new module-resolution candidates, Tailwind source/import dependencies, and source-directory retargeting; reject unsupported binary bundle outputs
+- Confirm stable dependency snapshots before caching Bun output, retry only changed build groups, and fail after three unstable attempts
+- Keep `id` attribute values quoted, preserve HTML attribute backslashes, quoted HEEx attribute values, HTML5 entities, class-expression comments, and SVG self-closing tags, safely reduce redundant whitespace, and sort multiline attributes without altering their contents
+- Preserve class attribute selectors, grouped style-query custom-property references, URL tokens, and unknown or invalid feature-test guards during CSS rewriting; match only exact Tailwind legacy conditions and reject unsupported class-selector matching modes
+- Serve all manifest image extensions and use linear short-class allocation
+- Validate complete cached static assets and use canonical CORS origins for endpoints with path prefixes
+- Preserve raw HEEx text across dynamic expressions and rename CSS custom properties consistently in transitions, including Unicode names
+- Remove all application dependency cycles
+- Reduce NIF allocation overhead for Brotli and CSS output
+- Isolate Bun temporary directories between processes, bound parallel compression, and remove redundant SVG source fields and legacy descriptor records
+- Let configured SVG sprite modes override directory naming, and omit a shared root viewBox in stacked sprites
+- Keep nested and overlapping compiler-disable scopes balanced
+- Update dependencies
+
 ## 4.2.0
 
 - Canonicalize Tailwind classes through the HEEx formatter with an optional stylesheet setting

@@ -8,6 +8,7 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   @behaviour Mix.Tasks.Format
 
   alias Phoenix.LiveView.HTMLFormatter
+  alias PhoenixAssetPipeline.HTML.Entities
   alias PhoenixAssetPipeline.HTML.Tailwind
 
   @class_regex ~r/(?:\[[^\]]*\]|\S)+/
@@ -97,7 +98,7 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   end
 
   defp class_attribute_match(<<?\\, char, rest::binary>>, index, depth, quote)
-       when quote in [?", ?'] or (depth > 0 and char in [?{, ?}]) do
+       when depth > 0 and (quote in [?", ?'] or char in [?{, ?}]) do
     class_attribute_match(rest, index + 2, depth, quote)
   end
 
@@ -173,15 +174,15 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   defp format_attr_expr(expr, indent, opts) do
     trimmed = String.trim(expr)
 
-    case Code.string_to_quoted(trimmed) do
-      {:ok, list} when is_list(list) ->
+    case Code.string_to_quoted_with_comments(trimmed) do
+      {:ok, list, []} when is_list(list) ->
         {:ok, "{" <> format_attr_items(process_items(list, opts), indent, opts) <> "}"}
 
-      {:ok, value} when is_binary(value) ->
+      {:ok, value, []} when is_binary(value) ->
         {:ok, "{" <> format_attr_string(value, indent, opts) <> "}"}
 
-      {:ok, _} ->
-        format_dynamic_classes(trimmed, indent, opts)
+      {:ok, _, comments} ->
+        format_dynamic_classes(trimmed, indent, opts, comments != [])
 
       _ ->
         :error
@@ -215,9 +216,14 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
   defp format_attr_value(<<?", _::binary>> = source, indent, opts) do
     with {:ok, value, rest} <- take_double_quoted(source) do
-      case grouped_class_items(value, opts) do
-        [item] -> {:ok, item, rest}
-        items -> {:ok, "{" <> format_attr_items(items, indent, opts) <> "}", rest}
+      case value |> Entities.decode_attribute() |> split_classes() |> grouped_classes(opts) do
+        [class] ->
+          {:safe, escaped} = Phoenix.HTML.html_escape(class)
+          {:ok, IO.iodata_to_binary([?", escaped, ?"]), rest}
+
+        classes ->
+          items = Enum.map(classes, &inspect/1)
+          {:ok, "{" <> format_attr_items(items, indent, opts) <> "}", rest}
       end
     end
   end
@@ -274,8 +280,8 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     {format_class_expression(classes, stylesheet), condition}
   end
 
-  defp format_class_expression({:{}, meta, [yes, condition, no]}, stylesheet) do
-    {:{}, meta, [format_class_expression(yes, stylesheet), condition, format_class_expression(no, stylesheet)]}
+  defp format_class_expression({:{}, meta, [truthy, falsy, condition]}, stylesheet) do
+    {:{}, meta, [format_class_expression(truthy, stylesheet), format_class_expression(falsy, stylesheet), condition]}
   end
 
   defp format_class_expression({:&&, meta, [condition, classes]}, stylesheet) do
@@ -293,17 +299,17 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
   defp format_class_expression(quoted, _), do: quoted
 
-  defp format_dynamic_classes(expr, indent, opts) do
-    if stylesheet = opts[:tailwind] do
+  defp format_dynamic_classes(expr, indent, opts, comments?) do
+    if comments? or opts[:tailwind] do
       {quoted, comments} =
         Code.string_to_quoted_with_comments!(expr,
           literal_encoder: &{:ok, {:__block__, &2, [&1]}},
           token_metadata: true
         )
 
-      formatted = format_class_expression(quoted, stylesheet)
+      formatted = format_class_expression(quoted, opts[:tailwind])
 
-      if formatted == quoted do
+      if formatted == quoted and comments == [] do
         :error
       else
         value =
@@ -446,6 +452,12 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     grouped ++ other_strings
   end
 
+  defp raw_text_close_boundary?(source, index) when index == byte_size(source), do: true
+
+  defp raw_text_close_boundary?(source, index) do
+    :binary.at(source, index) in [?>, ?/, ?\s, ?\t, ?\n, ?\r, ?\f]
+  end
+
   defp raw_text_close_index(source, tag) do
     closing = "</" <> tag
     raw_text_close_index(source, closing, byte_size(closing), 0)
@@ -459,7 +471,8 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
       {index, 1} ->
         candidate = binary_part(source, index, min(closing_size, byte_size(source) - index))
 
-        if candidate == closing or String.downcase(candidate) == closing do
+        if (candidate == closing or String.downcase(candidate) == closing) and
+             raw_text_close_boundary?(source, index + closing_size) do
           index
         else
           raw_text_close_index(source, closing, closing_size, index + 1)
@@ -487,6 +500,29 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     |> :lists.reverse()
     |> IO.iodata_to_binary()
   end
+
+  defp scan_attribute_context(<<?{, rest::binary>>, {depth, nil}) do
+    scan_attribute_context(rest, {depth + 1, nil})
+  end
+
+  defp scan_attribute_context(<<?}, rest::binary>>, {depth, nil}) when depth > 0 do
+    scan_attribute_context(rest, {depth - 1, nil})
+  end
+
+  defp scan_attribute_context(<<quote, rest::binary>>, {depth, nil}) when quote in [?', ?"] do
+    scan_attribute_context(rest, {depth, quote})
+  end
+
+  defp scan_attribute_context(<<?\\, _, rest::binary>>, {depth, quote}) when depth > 0 do
+    scan_attribute_context(rest, {depth, quote})
+  end
+
+  defp scan_attribute_context(<<quote, rest::binary>>, {depth, quote}) do
+    scan_attribute_context(rest, {depth, nil})
+  end
+
+  defp scan_attribute_context(<<_, rest::binary>>, context), do: scan_attribute_context(rest, context)
+  defp scan_attribute_context("", context), do: context
 
   defp scan_braced(<<?{, rest::binary>>, depth, acc, nil) do
     scan_braced(rest, depth + 1, ["{" | acc], nil)
@@ -609,25 +645,31 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
       end
 
     if is_binary(attr_indent) do
-      split_attr_chunks(lines, attr_indent, [], [])
+      split_attr_chunks(lines, attr_indent, [], [], {0, nil})
     else
       :error
     end
   end
 
-  defp split_attr_chunks([], _, [], chunks), do: {:ok, Enum.reverse(chunks)}
-  defp split_attr_chunks([], _, {name, lines}, chunks), do: {:ok, Enum.reverse([{name, Enum.reverse(lines)} | chunks])}
+  defp split_attr_chunks([], _, [], chunks, {0, nil}), do: {:ok, Enum.reverse(chunks)}
 
-  defp split_attr_chunks([line | rest], attr_indent, current, chunks) do
-    if attr_start_line?(line, attr_indent) do
+  defp split_attr_chunks([], _, {name, lines}, chunks, {0, nil}),
+    do: {:ok, Enum.reverse([{name, Enum.reverse(lines)} | chunks])}
+
+  defp split_attr_chunks([], _, _, _, _), do: :error
+
+  defp split_attr_chunks([line | rest], attr_indent, current, chunks, context) do
+    next_context = scan_attribute_context(line, context)
+
+    if context == {0, nil} and attr_start_line?(line, attr_indent) do
       id = attr_chunk_id(line)
       chunks = if current == [], do: chunks, else: [finish_attr_chunk(current) | chunks]
 
-      split_attr_chunks(rest, attr_indent, {id, [line]}, chunks)
+      split_attr_chunks(rest, attr_indent, {id, [line]}, chunks, next_context)
     else
       case current do
         [] -> :error
-        {id, lines} -> split_attr_chunks(rest, attr_indent, {id, [line | lines]}, chunks)
+        {id, lines} -> split_attr_chunks(rest, attr_indent, {id, [line | lines]}, chunks, next_context)
       end
     end
   end
@@ -688,10 +730,6 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
   defp take_double_quoted(<<?", rest::binary>>, acc), do: {:ok, reverse_iodata_to_binary(acc), rest}
 
-  defp take_double_quoted(<<"\\", char::utf8, rest::binary>>, acc) do
-    take_double_quoted(rest, [<<char::utf8>>, "\\" | acc])
-  end
-
   defp take_double_quoted(<<char::utf8, rest::binary>>, acc) do
     take_double_quoted(rest, [<<char::utf8>> | acc])
   end
@@ -719,7 +757,7 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   end
 
   defp take_markup_tag(original, <<?\\, char, rest::binary>>, index, depth, quote)
-       when quote in [?", ?'] or (depth > 0 and char in [?{, ?}]) do
+       when depth > 0 and (quote in [?", ?'] or char in [?{, ?}]) do
     take_markup_tag(original, rest, index + 2, depth, quote)
   end
 
@@ -744,15 +782,17 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     end
   end
 
-  defp take_tag_lines([], _), do: :error
+  defp take_tag_lines(lines, acc), do: take_tag_lines(lines, acc, {0, nil})
 
-  defp take_tag_lines([line | rest], acc) do
+  defp take_tag_lines([], _, _), do: :error
+
+  defp take_tag_lines([line | rest], acc, context) do
     acc = [line | acc]
 
-    if tag_close_line?(line) do
+    if context == {0, nil} and tag_close_line?(line) do
       {:ok, Enum.reverse(acc), rest}
     else
-      take_tag_lines(rest, acc)
+      take_tag_lines(rest, acc, scan_attribute_context(line, context))
     end
   end
 

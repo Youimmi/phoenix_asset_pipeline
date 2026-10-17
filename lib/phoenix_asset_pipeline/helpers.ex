@@ -195,10 +195,6 @@ defmodule PhoenixAssetPipeline.Helpers do
     )
   end
 
-  defp build_module_class_descriptors({_, _, module_descriptors}, descriptors, classes) do
-    put_module_class_descriptors(module_descriptors, descriptors, classes)
-  end
-
   defp build_module_class_descriptors({_, _, module_descriptors, _}, descriptors, classes) do
     put_module_class_descriptors(module_descriptors, descriptors, classes)
   end

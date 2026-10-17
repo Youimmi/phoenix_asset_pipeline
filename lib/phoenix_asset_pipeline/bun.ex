@@ -3,21 +3,50 @@ defmodule PhoenixAssetPipeline.Bun do
 
   alias PhoenixAssetPipeline.Config
 
-  @compile {:no_warn_undefined, {CAStore, :file_path, 0}}
   @ensured_key {__MODULE__, :ensured}
+  @execute_mask if(match?({:win32, _}, :os.type()), do: 0, else: 0o111)
   @fingerprint_chunk_size 1024 * 1024
   @fingerprint_key {__MODULE__, :fingerprint}
   @install_lock {__MODULE__, :install}
-  @version "1.4.2"
+  @version "1.4.3"
+
+  @checksums Map.new(
+               [
+                 {"darwin-aarch64",
+                  {"80afd4c069b46a6fa8f3ec520bebc750a7843e4a8d5b9583d29ad436c00a3403",
+                   "28c7dd0a06916aba284d570ef44a2d70e9c538eaf2ba58dfe0910525563b3f79"}},
+                 {"darwin-x64",
+                  {"62660e6438eb872278877acca77e1152d5d031324df368d4a81b428211489d2d",
+                   "c2a945a9d33f9088b32ac3550d1d1fd485a7fc10d71c66f91ef0d33b41cefa7c"}},
+                 {"linux-aarch64",
+                  {"efa9813da5ed72423bf847f916e8d2c47c0d776add972354026a75e10da9aa21",
+                   "029ece746ac9f970c76d8f48bdd1b1d0c52f3636b74d19f546f5e7c1165c0abe"}},
+                 {"linux-aarch64-musl",
+                  {"8de8a0003cc2707bb555887e3d450e24e1edf3f605f491393e89ed61a8853420",
+                   "94208b02231f5357be00ebd437ae9afb87d406887ba60f5f7a5732e677bde89e"}},
+                 {"linux-x64",
+                  {"3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18",
+                   "7ce7d6b654eddeec20afddf2396317fba6dc19ab52788a27e894e1806bf8f24b"}},
+                 {"linux-x64-musl",
+                  {"6e9ea98554ea0d05efda5840ae292618aaa3adefd66b0853520c5c86a37eac9c",
+                   "2a50a646294a1b5ff817d03313c7354f8ac43b7a37941b89f4d9b17bc5e86611"}},
+                 {"windows-x64",
+                  {"0bf84e808552beea67bf1202a287a35c6c825d837b287b3f8e9dd513dba35d3d",
+                   "095db4abae203d42f29fdec26da4a882fcde6333cdd84e40c0c7828c0cf543f6"}}
+               ],
+               fn {target, {archive, executable}} ->
+                 {target, {Base.decode16!(archive, case: :lower), Base.decode16!(executable, case: :lower)}}
+               end
+             )
 
   @wrapper_script ~S"""
   const command = process.argv.slice(1);
 
   const child = Bun.spawn(command, {
-    stdin: Bun.stdin.stream(),
+    stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
-    onExit: (_, code) => process.exit(code ?? 0)
+    onExit: (_, code) => process.exit(code ?? 1)
   });
 
   const kill = () => {
@@ -79,7 +108,8 @@ defmodule PhoenixAssetPipeline.Bun do
   def version, do: @version
 
   defp archive_binary!(version) do
-    url = download_url(version)
+    target = target()
+    url = download_url(version, target)
     scheme = URI.parse(url).scheme
 
     :ok = ensure_http_started!()
@@ -87,7 +117,8 @@ defmodule PhoenixAssetPipeline.Bun do
 
     case :httpc.request(:get, {String.to_charlist(url), []}, http_options(scheme), body_format: :binary) do
       {:ok, {{_, 200, _}, _, body}} ->
-        body
+        {archive_checksum, _} = Map.fetch!(@checksums, target)
+        verify_checksum!(body, archive_checksum, "Bun archive #{url}")
 
       {:ok, {{_, status, _}, _, body}} ->
         raise "could not download Bun #{version}: #{url} returned #{status}\n#{body}"
@@ -97,42 +128,14 @@ defmodule PhoenixAssetPipeline.Bun do
     end
   end
 
-  defp bin_version do
-    path = bin_path()
-
-    with true <- File.exists?(path),
-         {version, 0} <- System.cmd(path, ["--version"]) do
-      {:ok, String.trim(version)}
-    else
-      _ -> :error
-    end
-  end
-
   defp ca_options do
-    cond do
-      path = Application.get_env(:phoenix_asset_pipeline, :bun_cacertfile) ->
+    case Application.get_env(:phoenix_asset_pipeline, :bun_cacertfile) do
+      nil ->
+        [cacerts: :public_key.cacerts_get()]
+
+      path ->
         [cacertfile: to_charlist(path)]
-
-      path = castore_file_path() ->
-        [cacertfile: to_charlist(path)]
-
-      certs = otp_cacerts() ->
-        [cacerts: certs]
-
-      path = system_cacertfile() ->
-        [cacertfile: to_charlist(path)]
-
-      true ->
-        raise "could not find CA certificates for Bun download; configure :bun_cacertfile"
     end
-  end
-
-  defp castore_file_path do
-    if Code.ensure_loaded?(CAStore) and function_exported?(CAStore, :file_path, 0) do
-      CAStore.file_path()
-    end
-  rescue
-    _ -> nil
   end
 
   defp configure_proxy(scheme) do
@@ -145,8 +148,8 @@ defmodule PhoenixAssetPipeline.Bun do
     :ok
   end
 
-  defp download_url(version) do
-    "https://github.com/oven-sh/bun/releases/download/bun-v#{version}/bun-#{target()}.zip"
+  defp download_url(version, target) do
+    "https://github.com/oven-sh/bun/releases/download/bun-v#{version}/bun-#{target}.zip"
   end
 
   defp ensure_http_started! do
@@ -170,11 +173,27 @@ defmodule PhoenixAssetPipeline.Bun do
   end
 
   defp ensure_unlocked! do
-    version = version()
+    {_, expected} = Map.fetch!(@checksums, target())
 
-    case bin_version() do
-      {:ok, ^version} -> :ok
-      _ -> install!(version)
+    case executable_fingerprint(bin_path()) do
+      {:sha256, mode, ^expected}
+      when @execute_mask == 0 or Bitwise.band(mode, @execute_mask) != 0 ->
+        :ok
+
+      {:sha256, _, ^expected} ->
+        File.chmod!(bin_path(), 0o755)
+
+      _ ->
+        :ok = install!(version())
+
+        case executable_fingerprint(bin_path()) do
+          {:sha256, mode, ^expected}
+          when @execute_mask == 0 or Bitwise.band(mode, @execute_mask) != 0 ->
+            :ok
+
+          fingerprint ->
+            raise "installed Bun executable has an invalid checksum or mode: #{inspect(fingerprint)}"
+        end
     end
   end
 
@@ -183,7 +202,7 @@ defmodule PhoenixAssetPipeline.Bun do
   end
 
   defp executable_fingerprint(path) do
-    case File.stat(path, time: :posix) do
+    case File.lstat(path, time: :posix) do
       {:ok, %{type: :regular} = stat} ->
         signature = {path, %{stat | atime: 0}}
 
@@ -246,9 +265,10 @@ defmodule PhoenixAssetPipeline.Bun do
 
   defp install!(version) do
     bin_path = bin_path()
-    tmp_dir = Path.join(Path.dirname(bin_path), ".bun-#{System.unique_integer([:positive])}")
+    tmp_dir = Path.join(Path.dirname(bin_path), ".bun-#{System.pid()}-#{System.unique_integer([:monotonic, :positive])}")
 
-    File.mkdir_p!(tmp_dir)
+    File.mkdir_p!(Path.dirname(bin_path))
+    File.mkdir!(tmp_dir)
 
     try do
       downloaded_path = unzip!(archive_binary!(version), tmp_dir)
@@ -256,7 +276,6 @@ defmodule PhoenixAssetPipeline.Bun do
 
       File.cp!(downloaded_path, tmp_path)
       File.chmod!(tmp_path, 0o755)
-      File.mkdir_p!(Path.dirname(bin_path))
       File.rename!(tmp_path, bin_path)
     after
       File.rm_rf(tmp_dir)
@@ -276,15 +295,6 @@ defmodule PhoenixAssetPipeline.Bun do
     end
   end
 
-  defp otp_cacerts do
-    case :public_key.cacerts_get() do
-      certs when is_list(certs) and certs != [] -> certs
-      _ -> nil
-    end
-  rescue
-    _ -> nil
-  end
-
   defp proxy_auth(scheme) do
     with proxy when is_binary(proxy) <- proxy_for_scheme(scheme),
          %{userinfo: userinfo} when is_binary(userinfo) <- URI.parse(proxy),
@@ -302,20 +312,6 @@ defmodule PhoenixAssetPipeline.Bun do
   defp proxy_port(%{port: nil}, "https"), do: 443
   defp proxy_port(%{port: nil}, _), do: 80
   defp proxy_port(%{port: port}, _), do: port
-
-  defp system_cacertfile do
-    [
-      System.get_env("SSL_CERT_FILE"),
-      System.get_env("CURL_CA_BUNDLE"),
-      "/etc/ssl/cert.pem",
-      "/etc/ssl/certs/ca-certificates.crt",
-      "/opt/homebrew/etc/ca-certificates/cert.pem",
-      "/opt/homebrew/etc/openssl@3/cert.pem",
-      "/usr/local/etc/openssl@3/cert.pem"
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.find(&File.regular?/1)
-  end
 
   defp target do
     arch =
@@ -344,6 +340,17 @@ defmodule PhoenixAssetPipeline.Bun do
     case :zip.unzip(binary, cwd: to_charlist(tmp_dir), file_list: [to_charlist(zipped_target)]) do
       {:ok, [path]} -> List.to_string(path)
       other -> raise "could not unpack Bun archive: #{inspect(other)}"
+    end
+  end
+
+  defp verify_checksum!(binary, expected, name) do
+    actual = :crypto.hash(:sha256, binary)
+
+    if actual == expected do
+      binary
+    else
+      raise "#{name} checksum mismatch: expected #{Base.encode16(expected, case: :lower)}, " <>
+              "got #{Base.encode16(actual, case: :lower)}"
     end
   end
 end

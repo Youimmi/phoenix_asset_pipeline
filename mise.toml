@@ -1,4 +1,4 @@
 [tools]
-elixir = "latest"
-erlang = "latest"
-rust = "latest"
+elixir = "1.20.4-otp-29"
+erlang = "29.1.2"
+rust = "1.99.1"

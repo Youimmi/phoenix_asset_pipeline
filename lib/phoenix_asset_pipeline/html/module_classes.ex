@@ -3,6 +3,8 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
 
   alias PhoenixAssetPipeline.Cache
   alias PhoenixAssetPipeline.Config
+  alias PhoenixAssetPipeline.Digest
+  alias PhoenixAssetPipeline.Files
 
   @mapping_file "module_class_mappings.term"
   @scan_file "module_class_scan.term"
@@ -198,7 +200,7 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     end
   end
 
-  defp file_signature(content), do: :erlang.md5(content)
+  defp file_signature(content), do: Digest.binary(content)
 
   defp literal_group?(value) when value in [false, nil], do: true
   defp literal_group?(value) when is_binary(value), do: true
@@ -343,7 +345,8 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
         else: ["lib"]
 
     paths
-    |> Enum.flat_map(&Path.wildcard(Path.join(Path.expand(&1), "**/*.ex")))
+    |> Enum.flat_map(&Files.regular_files/1)
+    |> Enum.filter(&(Path.extname(&1) == ".ex"))
     |> Enum.uniq()
     |> Enum.sort()
   end

@@ -1,73 +1,35 @@
-use brotli::{BrotliCompress, enc::backward_references::BrotliEncoderParams};
-use rustler::{Binary, Env, Error, NifResult, OwnedBinary};
-use std::io::{self, Cursor, Write};
+use crate::binary::BinaryBuilder;
+use mbrotli::{Compressor, EncoderConfig, InputSize, Quality, RetentionPolicy};
+use rustler::{Binary, Env, Error, NifResult};
+use std::{
+    cell::RefCell,
+    io::{self, Write},
+};
+
+thread_local! {
+    static COMPRESSOR: RefCell<Compressor> = RefCell::new(
+        Compressor::builder(EncoderConfig::default())
+            .with_retention(RetentionPolicy::Bounded { max_bytes: 16 * 1024 * 1024 })
+            .build()
+            .expect("valid Brotli defaults")
+    );
+}
 
 struct BinaryWriter {
-    binary: OwnedBinary,
-    len: usize,
-    limit: usize,
+    builder: BinaryBuilder,
     overflowed: bool,
 }
 
 impl BinaryWriter {
-    fn into_binary<'a>(mut self, env: Env<'a>) -> NifResult<Binary<'a>> {
-        self.resize(self.len)
-            .map_err(|_| Error::Term(Box::new("brotli alloc error")))?;
-
-        Ok(Binary::from_owned(self.binary, env))
+    fn into_binary<'a>(self, env: Env<'a>) -> Binary<'a> {
+        self.builder.finish(env)
     }
 
-    fn new(capacity: usize, limit: usize) -> NifResult<Self> {
-        let binary = OwnedBinary::new(capacity)
-            .ok_or_else(|| Error::Term(Box::new("brotli alloc error")))?;
-
-        Ok(Self {
-            binary,
-            len: 0,
-            limit,
+    fn new(capacity: usize, limit: usize) -> Self {
+        Self {
+            builder: BinaryBuilder::new(capacity, limit),
             overflowed: false,
-        })
-    }
-
-    fn reserve(&mut self, additional: usize) -> io::Result<()> {
-        let required = self
-            .len
-            .checked_add(additional)
-            .ok_or_else(|| io::Error::other("brotli output too large"))?;
-
-        if required > self.limit {
-            self.overflowed = true;
-            return Err(io::Error::other("brotli output is not smaller than input"));
         }
-
-        if required <= self.binary.len() {
-            return Ok(());
-        }
-
-        let mut capacity = self.binary.len().max(1);
-
-        while capacity < required {
-            capacity = capacity
-                .checked_mul(2)
-                .map(|capacity| capacity.min(self.limit))
-                .ok_or_else(|| io::Error::other("brotli output too large"))?;
-        }
-
-        self.resize(capacity)
-    }
-
-    fn resize(&mut self, capacity: usize) -> io::Result<()> {
-        if self.binary.realloc(capacity) {
-            return Ok(());
-        }
-
-        let mut binary =
-            OwnedBinary::new(capacity).ok_or_else(|| io::Error::other("brotli alloc error"))?;
-
-        binary.as_mut_slice()[..self.len].copy_from_slice(&self.binary.as_slice()[..self.len]);
-        self.binary = binary;
-
-        Ok(())
     }
 }
 
@@ -75,44 +37,52 @@ impl Write for BinaryWriter {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.write_all(buf)?;
         Ok(buf.len())
     }
 
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.reserve(buf.len())?;
-
-        let next = self.len + buf.len();
-        self.binary.as_mut_slice()[self.len..next].copy_from_slice(buf);
-        self.len = next;
-
-        Ok(())
+        if self.builder.push(buf) {
+            Ok(())
+        } else {
+            self.overflowed = true;
+            Err(io::Error::other("brotli output is not smaller than input"))
+        }
     }
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn compress<'a>(env: Env<'a>, data: Binary<'a>, quality: u32) -> NifResult<Binary<'a>> {
-    if quality > 11 {
-        return Err(Error::BadArg);
-    }
+    let quality = u8::try_from(quality).map_err(|_| Error::BadArg)?;
+    let quality = Quality::try_from(quality).map_err(|_| Error::BadArg)?;
 
-    let mut input = Cursor::new(data.as_slice());
-    let mut output = BinaryWriter::new(data.len().clamp(32, 256 * 1024), data.len())?;
-    let params = BrotliEncoderParams {
-        lgwin: 22,
-        quality: quality as i32,
-        size_hint: data.len(),
-        ..BrotliEncoderParams::default()
-    };
+    COMPRESSOR.with_borrow_mut(|compressor| {
+        compressor
+            .reconfigure(EncoderConfig::default().with_quality(quality))
+            .map_err(|_| Error::BadArg)?;
 
-    if BrotliCompress(&mut input, &mut output, &params).is_err() {
-        return if output.overflowed {
-            Ok(data)
-        } else {
-            Err(Error::Term(Box::new("brotli write error")))
-        };
-    }
+        let mut output = BinaryWriter::new(data.len().clamp(32, 256 * 1024), data.len());
+        let result = compressor
+            .writer(&mut output, InputSize::Exact(data.len() as u64).into())
+            .map_err(io::Error::other)
+            .and_then(|mut writer| {
+                writer.write_all(data.as_slice())?;
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(mbrotli::io::FinishError::into_error)
+            });
 
-    output.into_binary(env)
+        if result.is_err() {
+            return if output.overflowed {
+                Ok(data)
+            } else {
+                Err(Error::Term(Box::new("brotli write error")))
+            };
+        }
+
+        Ok(output.into_binary(env))
+    })
 }

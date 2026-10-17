@@ -48,14 +48,14 @@ defmodule PhoenixAssetPipeline.Plug.Static do
   @impl true
   def call(%{method: method, path_info: [_ | _] = segments} = conn, %{only_rules: only_rules} = opts)
       when method in @allowed_methods do
-    case static_asset_type(conn, segments) do
+    case static_asset(conn, segments) do
       nil ->
         if static_path?(only_rules, segments),
           do: serve_static_file(conn, segments, opts),
           else: conn
 
-      type ->
-        serve_static_asset(conn, segments, type, opts)
+      asset ->
+        serve_static_asset(conn, segments, asset, opts)
     end
   end
 
@@ -153,18 +153,16 @@ defmodule PhoenixAssetPipeline.Plug.Static do
       else: segment
   end
 
-  defp digested_asset_type(path) do
-    size = byte_size(path)
-
-    case stem_size(path, size) do
-      nil -> nil
-      {type, stem_size} -> if digested_stem?(path, stem_size), do: type
+  defp digested_asset(<<_::binary-size(64), extension::binary>> = path) do
+    if (extension == "" or match?(<<?., _::binary>>, extension)) and hex?(path, 0, 64) do
+      case extension do
+        ".js" -> Manifest.find(:scripts, path) || Manifest.find(:images, path)
+        _ -> Manifest.find(:images, path)
+      end
     end
   end
 
-  defp digested_stem?(path, 32), do: hex?(path, 0, 32)
-
-  defp digested_stem?(_, _), do: false
+  defp digested_asset(_), do: nil
 
   defp encoding([], _), do: nil
 
@@ -325,12 +323,12 @@ defmodule PhoenixAssetPipeline.Plug.Static do
     end
   end
 
-  defp prepare_asset(%{private: %{phoenix_router_url: router_url}} = conn, encoding, asset, path, opts) do
+  defp prepare_asset(%{private: %{phoenix_router_origin: router_origin}} = conn, encoding, asset, path, opts) do
     conn
     |> maybe_add_encoding(encoding)
     |> maybe_put_content_type(opts.content_types, asset, path)
     |> put_resp_header("accept-ranges", "bytes")
-    |> put_resp_header("access-control-allow-origin", router_url)
+    |> put_resp_header("access-control-allow-origin", router_origin)
   end
 
   defp put_accepted_encoding("br", qvalue, {_, zstd, deflate, gzip, wildcard, identity}) do
@@ -470,18 +468,12 @@ defmodule PhoenixAssetPipeline.Plug.Static do
   defp serve_range(conn, _, byte_size, :unsatisfiable), do: send_unsatisfiable_range(conn, byte_size)
   defp serve_range(conn, content, _, :none), do: serve(conn, content)
 
-  defp serve_static_asset(conn, segments, type, opts) do
+  defp serve_static_asset(conn, segments, %{data: data} = asset, opts) do
     path = path_raw(segments)
 
-    case Manifest.find(type, path) do
-      %{data: data} = asset ->
-        conn
-        |> put_cache_control("public, max-age=31536000, immutable", path)
-        |> serve_asset(data, asset, path, opts)
-
-      _ ->
-        not_found(conn)
-    end
+    conn
+    |> put_cache_control("public, max-age=31536000, immutable", path)
+    |> serve_asset(data, asset, path, opts)
   end
 
   defp serve_static_file(conn, segments, opts) do
@@ -548,36 +540,22 @@ defmodule PhoenixAssetPipeline.Plug.Static do
     end
   end
 
-  defp static_asset_type(%{host: host, private: %{phoenix_router_host: router_host, phoenix_static_host: static_host}}, [
-         path | _
-       ])
+  defp static_asset(%{host: host, private: %{phoenix_router_host: router_host, phoenix_static_host: static_host}}, [path])
        when host == static_host and static_host != router_host do
-    digested_asset_type(path)
+    digested_asset(path)
   end
 
-  defp static_asset_type(%{host: host, private: %{phoenix_router_host: router_host}}, [path | _])
-       when host == router_host do
-    digested_asset_type(path)
+  defp static_asset(%{host: host, private: %{phoenix_router_host: router_host}}, [path]) when host == router_host do
+    digested_asset(path)
   end
 
-  defp static_asset_type(_, _), do: nil
+  defp static_asset(_, _), do: nil
 
   defp static_path?({true, _, _}, _), do: true
 
   defp static_path?({false, full, prefix}, [h | _]) do
     MapSet.member?(full, h) or (prefix != [] and String.starts_with?(h, prefix))
   end
-
-  defp stem_size(path, size) when size > 3 do
-    cond do
-      :binary.part(path, size - 3, 3) == ".js" -> {:scripts, size - 3}
-      size > 4 and :binary.part(path, size - 4, 4) in [".png", ".svg"] -> {:images, size - 4}
-      size > 5 and :binary.part(path, size - 5, 5) in [".avif", ".webp"] -> {:images, size - 5}
-      true -> nil
-    end
-  end
-
-  defp stem_size(_, _), do: nil
 
   defp trim_ascii(binary), do: trim_ascii_left(binary)
 

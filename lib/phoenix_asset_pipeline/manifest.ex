@@ -11,6 +11,7 @@ defmodule PhoenixAssetPipeline.Manifest do
   use GenServer
 
   alias PhoenixAssetPipeline.Config
+  alias PhoenixAssetPipeline.StaticAsset
 
   @precompiled? Config.precompiled_manifest?()
   @precompiled_module Module.concat(__MODULE__, Precompiled)
@@ -18,12 +19,21 @@ defmodule PhoenixAssetPipeline.Manifest do
   @snapshot_missing :__phoenix_asset_pipeline_manifest_snapshot_missing__
 
   if not @precompiled? do
+    @cold_cache_key {__MODULE__, :cold_cache}
     @snapshot_key {__MODULE__, :snapshot}
     @storage_missing :__phoenix_asset_pipeline_manifest_storage_missing__
   end
 
+  @doc """
+  Returns the cache file path used in `:cached` manifest mode.
+  """
+  def cache_path do
+    Path.join(Config.manifest_cache_dir(), @manifest_cache_file)
+  end
+
   if @precompiled? do
     @compile {:no_warn_undefined, {@precompiled_module, :manifest, 0}}
+    @runtime_manifest_missing :__phoenix_asset_pipeline_runtime_manifest_missing__
     @runtime_manifest_key {__MODULE__, :runtime_manifest}
 
     @doc """
@@ -42,7 +52,10 @@ defmodule PhoenixAssetPipeline.Manifest do
     def get(term, default \\ nil)
 
     def get(:manifest, _default) do
-      :persistent_term.get(@runtime_manifest_key, @precompiled_module.manifest())
+      case :persistent_term.get(@runtime_manifest_key, @runtime_manifest_missing) do
+        @runtime_manifest_missing -> @precompiled_module.manifest()
+        manifest -> manifest
+      end
     end
 
     def get(term, default) do
@@ -84,6 +97,18 @@ defmodule PhoenixAssetPipeline.Manifest do
     end
   else
     @current_generation_key :__phoenix_asset_pipeline_manifest_current_generation__
+
+    @doc false
+    def cached_loaded? do
+      case read_cached_manifest() do
+        :error ->
+          false
+
+        manifest ->
+          :persistent_term.put(@cold_cache_key, manifest)
+          true
+      end
+    end
 
     @doc """
     Reads a nested manifest value by section and key.
@@ -160,11 +185,7 @@ defmodule PhoenixAssetPipeline.Manifest do
     @doc false
     def put_compile_manifest(manifest) when is_map(manifest) do
       if Process.whereis(__MODULE__) do
-        try do
-          put(manifest)
-        catch
-          :exit, _ -> :ok
-        end
+        put(manifest)
       else
         :ok
       end
@@ -173,20 +194,6 @@ defmodule PhoenixAssetPipeline.Manifest do
     @doc false
     def start_link(_) do
       GenServer.start_link(__MODULE__, [], name: __MODULE__)
-    end
-
-    @cold_cache_key {__MODULE__, :cold_cache}
-
-    @doc false
-    def cached_loaded? do
-      case read_cached_manifest() do
-        :error ->
-          false
-
-        manifest ->
-          :persistent_term.put(@cold_cache_key, manifest)
-          true
-      end
     end
 
     defp acquire_generation(state, pid, generation) do
@@ -207,11 +214,7 @@ defmodule PhoenixAssetPipeline.Manifest do
 
     defp capture_snapshot do
       if Process.whereis(__MODULE__) do
-        try do
-          GenServer.call(__MODULE__, :acquire_snapshot)
-        catch
-          :exit, _ -> cold_snapshot()
-        end
+        GenServer.call(__MODULE__, :acquire_snapshot)
       else
         cold_snapshot()
       end
@@ -458,11 +461,7 @@ defmodule PhoenixAssetPipeline.Manifest do
 
     defp release_snapshot({:generation, generation}) do
       if Process.whereis(__MODULE__) do
-        try do
-          GenServer.call(__MODULE__, {:release_snapshot, generation})
-        catch
-          :exit, _ -> :ok
-        end
+        GenServer.call(__MODULE__, {:release_snapshot, generation})
       else
         :ok
       end
@@ -545,6 +544,17 @@ defmodule PhoenixAssetPipeline.Manifest do
     end
   end
 
+  if @precompiled? do
+    def save_cached(_), do: raise("cached manifests are disabled in :precompiled mode")
+  else
+    def save_cached(manifest) when is_map(manifest) do
+      PhoenixAssetPipeline.Cache.write_term!(cache_path(), manifest)
+      :persistent_term.put(@cold_cache_key, manifest)
+
+      :ok
+    end
+  end
+
   @doc """
   Writes the manifest as a generated BEAM module for production releases.
   """
@@ -567,7 +577,6 @@ defmodule PhoenixAssetPipeline.Manifest do
         classes: classes,
         csp_directives: csp_directives,
         digest: digest,
-        early_hints_preloads: early_hints_preloads,
         image_sources: image_sources,
         images: images,
         scripts: scripts,
@@ -577,30 +586,12 @@ defmodule PhoenixAssetPipeline.Manifest do
         static_signature: static_signature,
         style_tags: style_tags
       }) do
-    manifest_metadata_valid?(digest, signature, static_signature, early_hints_preloads) and
+    manifest_metadata_valid?(digest, signature, static_signature) and
       manifest_classes_valid?(classes, class_descriptors) and
       manifest_assets_valid?(images, image_sources, scripts, script_tags, style_tags, static_files, csp_directives)
   end
 
   def valid?(_), do: false
-
-  if @precompiled? do
-    def save_cached(_), do: raise("cached manifests are disabled in :precompiled mode")
-  else
-    def save_cached(manifest) when is_map(manifest) do
-      PhoenixAssetPipeline.Cache.write_term!(cache_path(), manifest)
-      :persistent_term.put({__MODULE__, :cold_cache}, manifest)
-
-      :ok
-    end
-  end
-
-  @doc """
-  Returns the cache file path used in `:cached` manifest mode.
-  """
-  def cache_path do
-    Path.join(Config.manifest_cache_dir(), @manifest_cache_file)
-  end
 
   defp binaries_valid?([value | values]) when is_binary(value), do: binaries_valid?(values)
   defp binaries_valid?([]), do: true
@@ -609,7 +600,7 @@ defmodule PhoenixAssetPipeline.Manifest do
   defp build_generated_files(%{static_files: files} = manifest) do
     files =
       Enum.reduce(Config.generated(), files, fn {path, {module, function, args}}, files ->
-        Map.put(files, path, PhoenixAssetPipeline.build_static_file(path, apply(module, function, args)))
+        Map.put(files, path, StaticAsset.build(path, apply(module, function, args)))
       end)
 
     %{manifest | static_files: files}
@@ -738,11 +729,10 @@ defmodule PhoenixAssetPipeline.Manifest do
     classes_valid?(classes) and class_descriptors_valid?(class_descriptors)
   end
 
-  defp manifest_metadata_valid?(digest, signature, static_signature, early_hints_preloads) do
+  defp manifest_metadata_valid?(digest, signature, static_signature) do
     is_binary(digest) and
       is_binary(signature) and
-      is_binary(static_signature) and
-      binaries_valid?(early_hints_preloads)
+      is_binary(static_signature)
   end
 
   @dialyzer {:nowarn_function, precompiled_beam!: 1}
@@ -818,8 +808,12 @@ defmodule PhoenixAssetPipeline.Manifest do
 
   defp static_files_valid?(static_files) when is_map(static_files) do
     Enum.all?(static_files, fn
-      {_, %{data: data}} when is_map(data) -> encoded_static_data_valid?(data)
-      _ -> false
+      {_, %{content_type: content_type, data: data, digest: digest}}
+      when is_binary(content_type) and is_map(data) and is_binary(digest) ->
+        encoded_static_data_valid?(data)
+
+      _ ->
+        false
     end)
   end
 

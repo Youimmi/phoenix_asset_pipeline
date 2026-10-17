@@ -6,18 +6,18 @@ defmodule PhoenixAssetPipeline.Watcher do
   """
   use GenServer
 
-  alias PhoenixAssetPipeline, as: AssetPipeline
   alias PhoenixAssetPipeline.Assets
   alias PhoenixAssetPipeline.Config
+  alias PhoenixAssetPipeline.Manifest
 
   require Logger
 
   @debounce_ms 120
 
-  def child_spec(_) do
+  def child_spec(run) do
     %{
       id: __MODULE__,
-      start: {__MODULE__, :start_link, []},
+      start: {__MODULE__, :start_link, [run]},
       restart: :transient
     }
   end
@@ -28,7 +28,7 @@ defmodule PhoenixAssetPipeline.Watcher do
   @impl true
   def handle_info({:file_event, monitor, {path, _}}, %{monitor: monitor} = state) do
     state =
-      if source_path?(path, state.dirs),
+      if source_path?(path, state.sources),
         do: schedule_rebuild(state),
         else: state
 
@@ -47,35 +47,29 @@ defmodule PhoenixAssetPipeline.Watcher do
     {:noreply, start_rebuild(%{state | timer: nil})}
   end
 
-  def handle_info({:asset_pipeline_rebuild_done, pid}, %{rebuild: {pid, ref}} = state) do
+  def handle_info({:asset_pipeline_rebuild_done, pid, sources}, %{rebuild: {pid, ref}} = state) do
     Process.demonitor(ref, [:flush])
 
-    {:noreply, finish_rebuild(state)}
+    {:noreply, state |> refresh_sources(sources) |> finish_rebuild()}
   end
 
   def handle_info({:DOWN, ref, :process, pid, reason}, %{rebuild: {pid, ref}} = state) do
-    if reason != :normal do
-      Logger.error("Could not rebuild PhoenixAssetPipeline manifest: #{inspect(reason)}")
-    end
-
+    Logger.error("Could not rebuild PhoenixAssetPipeline manifest: #{Exception.format_exit(reason)}")
     {:noreply, finish_rebuild(state)}
   end
 
   def handle_info(_, state), do: {:noreply, state}
 
   @impl true
-  def init(_) do
+  def init(run) do
     Process.flag(:trap_exit, true)
-    dirs = Assets.watch_dirs()
 
-    case dirs do
-      [] ->
-        Logger.warning("Could not watch PhoenixAssetPipeline sources: no source directories exist")
+    case Assets.watch_sources() do
+      {[], _, _} ->
+        raise "could not watch PhoenixAssetPipeline sources: no source directories exist"
 
-        :ignore
-
-      [_ | _] ->
-        start_file_system(dirs)
+      sources ->
+        start_file_system(sources, run)
     end
   end
 
@@ -85,8 +79,8 @@ defmodule PhoenixAssetPipeline.Watcher do
   end
 
   @doc false
-  def start_link do
-    GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  def start_link(run) when is_function(run, 0) do
+    GenServer.start_link(__MODULE__, run, name: __MODULE__)
   end
 
   @impl true
@@ -121,21 +115,28 @@ defmodule PhoenixAssetPipeline.Watcher do
     |> Enum.any?(&(&1 == "node_modules"))
   end
 
-  defp run_rebuild do
-    previous_signature = AssetPipeline.Manifest.get(:signature)
+  defp refresh_sources(%{sources: {dirs, _, _}} = state, {dirs, _, _} = sources) do
+    %{state | sources: sources}
+  end
 
-    :ok = AssetPipeline.run()
+  defp refresh_sources(%{monitor: monitor} = state, sources) do
+    new_monitor = start_monitor!(sources)
+    Process.unlink(monitor)
+    Process.exit(monitor, :shutdown)
+    %{state | sources: sources, monitor: new_monitor}
+  end
 
-    if previous_signature != AssetPipeline.Manifest.get(:signature) do
+  defp run_rebuild(run) do
+    previous_signature = Manifest.get(:signature)
+
+    :ok = run.()
+
+    if previous_signature != Manifest.get(:signature) do
       broadcast_live_reload()
       Logger.debug("Rebuilt PhoenixAssetPipeline manifest")
     end
-  rescue
-    exception ->
-      Logger.error([
-        "Could not rebuild PhoenixAssetPipeline manifest: ",
-        Exception.message(exception)
-      ])
+
+    Assets.watch_sources()
   end
 
   defp schedule_rebuild(%{timer: timer} = state) when is_reference(timer) do
@@ -157,45 +158,48 @@ defmodule PhoenixAssetPipeline.Watcher do
     %{state | timer: timer}
   end
 
-  defp source_path?(path, dirs) do
+  defp source_path?(path, {_, dirs, files}) do
     path =
       path
       |> to_string()
       |> Path.expand()
 
-    !ignored_source_path?(path) and Enum.any?(dirs, &(path == &1 or String.starts_with?(path, &1 <> "/")))
+    ignored? = ignored_source_path?(path)
+
+    MapSet.member?(files, path) or
+      Enum.any?(dirs, fn dir ->
+        (path == dir or String.starts_with?(path, dir <> "/")) and
+          (!ignored? or ignored_source_path?(dir))
+      end)
   end
 
-  defp start_file_system(dirs) do
-    case FileSystem.start_link(dirs: dirs) do
-      {:ok, monitor} ->
-        :ok = FileSystem.subscribe(monitor)
+  defp start_file_system(sources, run) do
+    state = %{
+      sources: sources,
+      monitor: start_monitor!(sources),
+      pending?: false,
+      rebuild: nil,
+      run: run,
+      timer: nil
+    }
 
-        state = %{
-          dirs: dirs,
-          monitor: monitor,
-          pending?: false,
-          rebuild: nil,
-          timer: nil
-        }
-
-        {:ok, schedule_rebuild(state)}
-
-      {:error, reason} ->
-        Logger.warning("Could not watch PhoenixAssetPipeline sources: #{inspect(reason)}")
-
-        :ignore
-    end
+    {:ok, schedule_rebuild(state)}
   end
 
-  defp start_rebuild(%{rebuild: nil} = state) do
+  defp start_monitor!({dirs, _, _}) do
+    {:ok, monitor} = FileSystem.start_link(dirs: dirs)
+    :ok = FileSystem.subscribe(monitor)
+    monitor
+  end
+
+  defp start_rebuild(%{rebuild: nil, run: run} = state) do
     parent = self()
 
     {pid, ref} =
       :erlang.spawn_opt(
         fn ->
-          run_rebuild()
-          send(parent, {:asset_pipeline_rebuild_done, self()})
+          sources = run_rebuild(run)
+          send(parent, {:asset_pipeline_rebuild_done, self(), sources})
         end,
         [:link, :monitor]
       )
