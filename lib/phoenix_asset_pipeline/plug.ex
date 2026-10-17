@@ -103,7 +103,8 @@ defmodule PhoenixAssetPipeline.Plug do
     max_length = Keyword.get(opts, :length, 64_000)
 
     conn =
-      with ["application/reports+json"] <- get_req_header(conn, "content-type"),
+      with [content_type] <- get_req_header(conn, "content-type"),
+           {:ok, "application", "reports+json", _} <- Utils.media_type(content_type),
            {status, body, conn} <- read_body(conn, length: max_length) do
         with :ok <- status,
              true <- byte_size(body) <= max_length,
