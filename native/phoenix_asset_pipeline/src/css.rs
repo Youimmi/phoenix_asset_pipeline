@@ -1,18 +1,22 @@
-use ahash::{AHashMap, AHashSet, RandomState};
+use crate::binary::BinaryBuilder;
+use ahash::{AHashMap, RandomState};
 use core::fmt::NumBuffer;
 use lightningcss::{
     declaration::DeclarationBlock,
-    printer::PrinterOptions,
+    printer::{Printer, PrinterOptions},
     properties::{Property, PropertyId},
     rules::{CssRule, CssRuleList, supports::SupportsCondition},
     selector::{Component, PseudoClass, PseudoElement, Selector, SelectorList},
     stylesheet::{MinifyOptions, ParserOptions, StyleSheet},
     traits::{ParseWithOptions, ToCss},
-    values::ident::Ident,
+    values::{ident::Ident, string::CSSString},
     vendor_prefix::VendorPrefix,
     visitor::{Visit, VisitTypes, Visitor},
 };
-use parcel_selectors::parser::NthOfSelectorData;
+use parcel_selectors::{
+    attr::{AttrSelectorOperator, ParsedAttrSelectorOperation, ParsedCaseSensitivity},
+    parser::NthOfSelectorData,
+};
 use rustler::{Binary, Encoder, Env, Term};
 
 const CLASS_MARKER_BASE: &str = "__p";
@@ -22,6 +26,44 @@ mod atoms {
     rustler::atoms! {
         ok,
         error
+    }
+}
+
+#[derive(Debug, Default)]
+struct CustomPropertyContext {
+    parenthesis_depth: usize,
+    property_references: bool,
+    style_depth: usize,
+    style_value_depth: usize,
+}
+
+impl CustomPropertyContext {
+    fn update(&mut self, bytes: &[u8], index: usize) {
+        match bytes[index] {
+            b'(' => {
+                self.parenthesis_depth += 1;
+                if self.style_depth == 0 && css_function_name(bytes, index, b"style") {
+                    self.style_depth = self.parenthesis_depth;
+                }
+            }
+            b')' => {
+                if self.style_value_depth == self.parenthesis_depth {
+                    self.style_value_depth = 0;
+                }
+                if self.style_depth == self.parenthesis_depth {
+                    self.style_depth = 0;
+                }
+                self.parenthesis_depth = self.parenthesis_depth.saturating_sub(1);
+            }
+            b':' => {
+                self.property_references = property_reference(bytes, index);
+                if self.style_depth != 0 && self.style_value_depth == 0 {
+                    self.style_value_depth = self.parenthesis_depth;
+                }
+            }
+            b';' | b'{' | b'}' => self.property_references = false,
+            _ => {}
+        }
     }
 }
 
@@ -35,11 +77,35 @@ struct PreparedCss {
 }
 
 struct SelectorClassProcessor {
-    class_indices: AHashMap<String, (usize, usize)>,
+    class_indices: AHashMap<String, (usize, usize, Ident<'static>)>,
     marker_prefix: String,
 }
 
 impl SelectorClassProcessor {
+    fn class_marker(&mut self, class_name: &str) -> Ident<'static> {
+        match self.class_indices.get_mut(class_name) {
+            Some((_, count, marker)) => {
+                *count += 1;
+                marker.clone()
+            }
+            None => {
+                let index = self.class_indices.len();
+                let mut buffer = NumBuffer::new();
+                let index_text = index.format_into(&mut buffer);
+                let mut marker =
+                    String::with_capacity(self.marker_prefix.len() + index_text.len() + 1);
+                marker.push_str(&self.marker_prefix);
+                marker.push_str(index_text);
+                marker.push('_');
+
+                let marker = Ident(marker.into());
+                self.class_indices
+                    .insert(class_name.to_owned(), (index, 1, marker.clone()));
+                marker
+            }
+        }
+    }
+
     fn marker() -> Self {
         Self {
             class_indices: AHashMap::new(),
@@ -47,27 +113,47 @@ impl SelectorClassProcessor {
         }
     }
 
-    fn process_class(&mut self, class: &mut Ident<'_>) {
-        let class_name = class.0.as_ref();
-        let index = match self.class_indices.get_mut(class_name) {
-            Some((index, count)) => {
-                *count += 1;
-                *index
-            }
-            None => {
-                let index = self.class_indices.len();
-                self.class_indices.insert(class_name.to_owned(), (index, 1));
-                index
-            }
-        };
+    fn process_attribute_classes(
+        &mut self,
+        operator: AttrSelectorOperator,
+        case_sensitivity: ParsedCaseSensitivity,
+        value: &mut CSSString<'_>,
+    ) -> Result<(), String> {
+        let text = value.0.as_ref();
 
-        let mut buffer = NumBuffer::new();
-        let index = index.format_into(&mut buffer);
-        let mut marker = String::with_capacity(self.marker_prefix.len() + index.len() + 1);
-        marker.push_str(&self.marker_prefix);
-        marker.push_str(index);
-        marker.push('_');
-        *class = Ident(marker.into());
+        if !matches!(
+            operator,
+            AttrSelectorOperator::Equal | AttrSelectorOperator::Includes
+        ) {
+            return Err("CSS class attribute selectors require '=' or '~=' matching".to_owned());
+        }
+
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        if text.bytes().any(css_whitespace) {
+            return Err(
+                "CSS class equality selectors require an empty value or one token without whitespace"
+                    .to_owned(),
+            );
+        }
+
+        if !matches!(
+            case_sensitivity,
+            ParsedCaseSensitivity::CaseSensitive | ParsedCaseSensitivity::ExplicitCaseSensitive
+        ) {
+            return Err("CSS class attribute selectors require case-sensitive matching".to_owned());
+        }
+
+        *value = CSSString(self.class_marker(text).0);
+        Ok(())
+    }
+
+    fn process_class(&mut self, class: &mut Ident<'_>) {
+        let marker = self.class_marker(class.0.as_ref());
+
+        *class = marker;
     }
 
     fn process_component(
@@ -76,6 +162,34 @@ impl SelectorClassProcessor {
         depth: usize,
     ) -> Result<(), String> {
         match component {
+            Component::AttributeInNoNamespace {
+                local_name,
+                operator,
+                value,
+                case_sensitivity,
+                never_matches: false,
+            } if local_name.0.as_ref() == "class" => {
+                self.process_attribute_classes(*operator, *case_sensitivity, value)?;
+            }
+            Component::AttributeOther(attribute)
+                if attribute.local_name_lower.0.as_ref() == "class" && !attribute.never_matches =>
+            {
+                if let ParsedAttrSelectorOperation::WithValue {
+                    operator,
+                    case_sensitivity,
+                    expected_value,
+                } = &mut attribute.operation
+                {
+                    if attribute.namespace.is_some() && !expected_value.bytes().all(css_whitespace)
+                    {
+                        return Err(
+                            "namespaced CSS class attribute selectors cannot be obfuscated"
+                                .to_owned(),
+                        );
+                    }
+                    self.process_attribute_classes(*operator, *case_sensitivity, expected_value)?;
+                }
+            }
             Component::Class(class) => self.process_class(class),
             Component::Negation(selectors)
             | Component::Where(selectors)
@@ -182,14 +296,13 @@ pub fn finalize_css_nif<'a>(
 ) -> Term<'a> {
     encode_result(
         env,
-        css_text(css).and_then(|css| {
-            finalize_css(
-                css,
-                marker_prefix.as_slice(),
-                &class_replacements,
-                &variable_replacements,
-            )
-        }),
+        finalize_css(
+            env,
+            css,
+            marker_prefix.as_slice(),
+            &class_replacements,
+            &variable_replacements,
+        ),
     )
 }
 
@@ -221,17 +334,19 @@ fn collect_custom_properties(css: &str) -> Vec<(String, usize)> {
     let bytes = css.as_bytes();
     let mut counts = AHashMap::new();
     let mut cursor = 0;
+    let mut context = CustomPropertyContext::default();
 
     while cursor < bytes.len() {
-        if matches!(bytes[cursor], b'\'' | b'"') {
-            cursor = skip_css_string(bytes, cursor);
+        if let Some(stop) = skip_css_literal(bytes, cursor) {
+            cursor = stop;
         } else if bytes[cursor] == b'-'
-            && let Some(stop) = custom_property_end(bytes, cursor)
+            && let Some(stop) = custom_property_end(bytes, cursor, &context)
         {
             let property = &css[cursor..stop];
             *counts.entry(property).or_insert(0) += 1;
             cursor = stop;
         } else {
+            context.update(bytes, cursor);
             cursor += 1;
         }
     }
@@ -244,19 +359,37 @@ fn collect_custom_properties(css: &str) -> Vec<(String, usize)> {
     counts
 }
 
+fn css_function_name(bytes: &[u8], open: usize, name: &[u8]) -> bool {
+    open >= name.len()
+        && bytes[open - name.len()..open].eq_ignore_ascii_case(name)
+        && (open == name.len() || !css_variable_byte(bytes[open - name.len() - 1]))
+}
+
 fn css_text(css: Binary<'_>) -> Result<&str, String> {
     std::str::from_utf8(css.as_slice()).map_err(|error| format!("CSS is not valid UTF-8: {error}"))
 }
 
+fn css_url_start(bytes: &[u8], index: usize) -> bool {
+    bytes[index..]
+        .get(..4)
+        .is_some_and(|name| name.eq_ignore_ascii_case(b"url("))
+        && (index == 0 || !css_variable_byte(bytes[index - 1]))
+}
+
 fn css_variable_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | 0x80..=0xff)
 }
 
 fn css_whitespace(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
 }
 
-fn custom_property_context(bytes: &[u8], index: usize, stop: usize) -> bool {
+fn custom_property_context(
+    bytes: &[u8],
+    index: usize,
+    stop: usize,
+    context: &CustomPropertyContext,
+) -> bool {
     let next = skip_css_whitespace(bytes, stop);
     let previous = previous_non_whitespace(bytes, index);
 
@@ -266,21 +399,37 @@ fn custom_property_context(bytes: &[u8], index: usize, stop: usize) -> bool {
     let property_rule = bytes.get(next) == Some(&b'{')
         && previous.is_some_and(|end| {
             end >= 8
-                && &bytes[end - 8..=end] == b"@property"
+                && bytes[end - 8..=end].eq_ignore_ascii_case(b"@property")
                 && (end == 8 || !css_variable_byte(bytes[end - 9]))
         });
 
-    let var_function = previous.is_some_and(|open| {
-        open >= 3
-            && bytes[open] == b'('
-            && &bytes[open - 3..open] == b"var"
-            && (open == 3 || !css_variable_byte(bytes[open - 4]))
-    });
+    let function_reference = matches!(bytes.get(next), Some(b',' | b')'))
+        && previous.is_some_and(|open| {
+            bytes[open] == b'('
+                && ([b"var".as_slice(), b"style".as_slice()]
+                    .iter()
+                    .any(|name| css_function_name(bytes, open, name))
+                    || (context.style_depth != 0
+                        && context.style_value_depth == 0
+                        && bytes.get(next) == Some(&b')')
+                        && (open == 0 || !css_variable_byte(bytes[open - 1]))))
+        });
 
-    declaration || property_rule || var_function
+    let property_reference = context.property_references
+        && index > 0
+        && (css_whitespace(bytes[index - 1]) || matches!(bytes[index - 1], b':' | b','))
+        && bytes.get(stop).is_none_or(|&byte| {
+            css_whitespace(byte) || matches!(byte, b',' | b';' | b'}' | b')' | b'!')
+        });
+
+    declaration || property_rule || function_reference || property_reference
 }
 
-fn custom_property_end(bytes: &[u8], index: usize) -> Option<usize> {
+fn custom_property_end(
+    bytes: &[u8],
+    index: usize,
+    context: &CustomPropertyContext,
+) -> Option<usize> {
     if index + 2 >= bytes.len()
         || bytes[index + 1] != b'-'
         || !css_variable_byte(bytes[index + 2])
@@ -295,7 +444,7 @@ fn custom_property_end(bytes: &[u8], index: usize) -> Option<usize> {
         stop += 1;
     }
 
-    if custom_property_context(bytes, index, stop) {
+    if custom_property_context(bytes, index, stop, context) {
         Some(stop)
     } else {
         None
@@ -309,19 +458,23 @@ fn encode_result<'a, T: Encoder>(env: Env<'a>, result: Result<T, String>) -> Ter
     }
 }
 
-fn finalize_css(
-    css: &str,
+fn finalize_css<'a>(
+    env: Env<'a>,
+    input: Binary<'a>,
     marker_prefix: &[u8],
     class_replacements: &[Binary<'_>],
     variable_replacements: &[(Binary<'_>, Binary<'_>)],
-) -> Result<String, String> {
-    let class_replacements = class_replacements
-        .iter()
-        .map(|replacement| {
-            std::str::from_utf8(replacement.as_slice())
-                .map_err(|error| format!("class replacement is not valid UTF-8: {error}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+) -> Result<Binary<'a>, String> {
+    let css = css_text(input)?;
+
+    for (index, replacement) in class_replacements.iter().enumerate() {
+        let replacement = std::str::from_utf8(replacement.as_slice())
+            .map_err(|error| format!("class replacement is not valid UTF-8: {error}"))?;
+
+        if !replacement.starts_with('.') {
+            return Err(format!("invalid replacement for CSS class marker {index}"));
+        }
+    }
 
     let mut variables = AHashMap::with_capacity(variable_replacements.len());
 
@@ -330,27 +483,45 @@ fn finalize_css(
             .map_err(|error| format!("CSS variable is not valid UTF-8: {error}"))?;
         let replacement = std::str::from_utf8(replacement.as_slice())
             .map_err(|error| format!("CSS variable replacement is not valid UTF-8: {error}"))?;
-        variables.insert(variable, replacement);
+        variables.insert(variable.as_bytes(), replacement.as_bytes());
     }
 
     let bytes = css.as_bytes();
     let mut cursor = 0;
     let mut last = 0;
-    let mut output = String::with_capacity(css.len());
+    let mut string_quote = None;
+    let mut output = None;
+    let mut context = CustomPropertyContext::default();
 
     while cursor < bytes.len() {
-        if !variables.is_empty() && matches!(bytes[cursor], b'\'' | b'"') {
-            cursor = skip_css_string(bytes, cursor);
+        if let Some(quote) = string_quote {
+            if bytes[cursor] == b'\\' {
+                cursor = (cursor + 2).min(bytes.len());
+                continue;
+            }
+            if bytes[cursor] == quote {
+                string_quote = None;
+                cursor += 1;
+                continue;
+            }
+        } else if matches!(bytes[cursor], b'\'' | b'"') {
+            if class_replacements.is_empty() {
+                cursor = skip_css_string(bytes, cursor);
+            } else {
+                string_quote = Some(bytes[cursor]);
+                cursor += 1;
+            }
+            continue;
+        } else if let Some(stop) = skip_css_literal(bytes, cursor) {
+            cursor = stop;
             continue;
         }
 
-        if !class_replacements.is_empty()
-            && bytes[cursor] == b'.'
-            && bytes[cursor + 1..].starts_with(marker_prefix)
-        {
-            output.push_str(&css[last..cursor]);
+        let dotted_class = bytes[cursor] == b'.';
+        let marker_start = cursor + usize::from(dotted_class);
 
-            let mut index_cursor = cursor + marker_prefix.len() + 1;
+        if !class_replacements.is_empty() && bytes[marker_start..].starts_with(marker_prefix) {
+            let mut index_cursor = marker_start + marker_prefix.len();
             let index_start = index_cursor;
             let mut index = 0_usize;
 
@@ -369,35 +540,58 @@ fn finalize_css(
             let replacement = class_replacements
                 .get(index)
                 .ok_or_else(|| format!("missing replacement for CSS class marker {index}"))?;
+            let output = output.get_or_insert_with(|| BinaryBuilder::new(bytes.len(), usize::MAX));
 
-            if !replacement.starts_with('.') {
-                return Err(format!("invalid replacement for CSS class marker {index}"));
+            if !output.push(&bytes[last..cursor])
+                || !output.push(&replacement.as_slice()[usize::from(!dotted_class)..])
+            {
+                return Err("CSS output is too large".to_owned());
             }
 
-            output.push_str(replacement);
             cursor = index_cursor + 1;
             last = cursor;
             continue;
         }
 
+        if string_quote.is_some() {
+            cursor += 1;
+            continue;
+        }
+
         if !variables.is_empty()
             && bytes[cursor] == b'-'
-            && let Some(stop) = custom_property_end(bytes, cursor)
+            && let Some(stop) = custom_property_end(bytes, cursor, &context)
         {
-            if let Some(replacement) = variables.get(&css[cursor..stop]) {
-                output.push_str(&css[last..cursor]);
-                output.push_str(replacement);
+            if let Some(replacement) = variables.get(&bytes[cursor..stop]) {
+                let output =
+                    output.get_or_insert_with(|| BinaryBuilder::new(bytes.len(), usize::MAX));
+
+                if !output.push(&bytes[last..cursor]) || !output.push(replacement) {
+                    return Err("CSS output is too large".to_owned());
+                }
+
                 last = stop;
             }
 
             cursor = stop;
         } else {
+            if !variables.is_empty() {
+                context.update(bytes, cursor);
+            }
             cursor += 1;
         }
     }
 
-    output.push_str(&css[last..]);
-    Ok(output)
+    match output {
+        Some(mut output) => {
+            if output.push(&bytes[last..]) {
+                Ok(output.finish(env))
+            } else {
+                Err("CSS output is too large".to_owned())
+            }
+        }
+        None => Ok(input),
+    }
 }
 
 fn matches_custom_property(property_id: &PropertyId<'_>, name: &str) -> bool {
@@ -418,7 +612,7 @@ fn modern_supports(condition: &SupportsCondition) -> bool {
     match condition {
         SupportsCondition::And(conditions) => conditions.iter().all(modern_supports),
         SupportsCondition::Declaration { property_id, value } => {
-            property_id == &PropertyId::Color && value.as_ref().contains("color-mix(")
+            property_id == &PropertyId::Color && valid_color_function(value.as_ref(), b"color-mix(")
         }
         SupportsCondition::Or(conditions) => tailwind_placeholder_supports(conditions),
         _ => false,
@@ -439,7 +633,7 @@ fn prepare_css(raw_css: &str) -> Result<PreparedCss, String> {
     let mut marker_classes = vec![String::new(); processor.class_indices.len()];
     let mut class_counts = vec![0; processor.class_indices.len()];
 
-    for (class_name, (index, count)) in processor.class_indices {
+    for (class_name, (index, count, _)) in processor.class_indices {
         marker_classes[index] = class_name;
         class_counts[index] = count;
     }
@@ -489,13 +683,36 @@ fn property_condition(
     }
 }
 
-fn property_uses_color_mix(property: &Property<'_>) -> bool {
-    property
-        .value_to_css_string(PrinterOptions {
+fn property_reference(bytes: &[u8], colon: usize) -> bool {
+    let Some(end) = previous_non_whitespace(bytes, colon) else {
+        return false;
+    };
+    let mut start = end;
+
+    while start > 0 && (bytes[start - 1].is_ascii_alphabetic() || bytes[start - 1] == b'-') {
+        start -= 1;
+    }
+
+    previous_non_whitespace(bytes, start)
+        .is_some_and(|previous| matches!(bytes[previous], b'{' | b';' | b'('))
+        && matches!(
+            &bytes[start..=end],
+            b"transition" | b"transition-property" | b"will-change"
+        )
+}
+
+fn property_uses_color_mix(property: &Property<'_>, value: &mut String) -> bool {
+    value.clear();
+
+    let result = property.value_to_css(&mut Printer::new(
+        value,
+        PrinterOptions {
             minify: true,
             ..PrinterOptions::default()
-        })
-        .is_ok_and(|value| value.contains("color-mix("))
+        },
+    ));
+
+    result.is_ok() && value.contains("color-mix(")
 }
 
 fn remove_fallback_declarations(declarations: &mut Vec<Property<'_>>) {
@@ -503,31 +720,33 @@ fn remove_fallback_declarations(declarations: &mut Vec<Property<'_>>) {
         return;
     }
 
-    if declarations.len() == 2 {
-        if declarations[0].property_id() != declarations[1].property_id() {
-            return;
-        }
-    } else {
-        let mut property_ids = AHashSet::with_capacity(declarations.len());
-
-        if declarations
-            .iter()
-            .all(|declaration| property_ids.insert(declaration.property_id()))
-        {
-            return;
-        }
+    if declarations.len() == 2 && declarations[0].property_id() != declarations[1].property_id() {
+        return;
     }
 
-    let mut modern_properties = AHashSet::new();
+    let mut property_counts = AHashMap::with_capacity(declarations.len());
+
+    for declaration in declarations.iter() {
+        *property_counts
+            .entry(declaration.property_id())
+            .or_insert(0) += 1;
+    }
+
+    if property_counts.len() == declarations.len() {
+        return;
+    }
+
+    let mut value = String::new();
 
     declarations.retain(|declaration| {
         let property_id = declaration.property_id();
+        let count = property_counts.get_mut(&property_id).unwrap();
 
-        if modern_properties.contains(&property_id) {
+        if *count == 0 {
             false
         } else {
-            if property_uses_color_mix(declaration) {
-                modern_properties.insert(property_id);
+            if *count > 1 && property_uses_color_mix(declaration, &mut value) {
+                *count = 0;
             }
 
             true
@@ -564,6 +783,29 @@ fn remove_modern_fallbacks(rules: &mut CssRuleList<'_>) {
     }
 }
 
+fn skip_css_literal(bytes: &[u8], index: usize) -> Option<usize> {
+    if matches!(bytes[index], b'\'' | b'"') {
+        return Some(skip_css_string(bytes, index));
+    }
+
+    if !css_url_start(bytes, index) {
+        return None;
+    }
+
+    let mut cursor = index + 4;
+
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor = (cursor + 2).min(bytes.len()),
+            b'\'' | b'"' => cursor = skip_css_string(bytes, cursor),
+            b')' => return Some(cursor + 1),
+            _ => cursor += 1,
+        }
+    }
+
+    Some(cursor)
+}
+
 fn skip_css_string(bytes: &[u8], mut index: usize) -> usize {
     let quote = bytes[index];
     index += 1;
@@ -589,20 +831,11 @@ fn skip_css_whitespace(bytes: &[u8], mut index: usize) -> usize {
 
 fn tailwind_legacy_property_condition(condition: &SupportsCondition<'_>) -> bool {
     match condition {
-        SupportsCondition::Or(conditions) => {
-            let mut moz = false;
-            let mut webkit = false;
-
-            for condition in conditions {
-                moz |= tailwind_moz_legacy_property_condition(condition);
-                webkit |= tailwind_webkit_legacy_property_condition(condition);
-
-                if moz && webkit {
-                    return true;
-                }
-            }
-
-            false
+        SupportsCondition::Or(conditions) if conditions.len() == 2 => {
+            (tailwind_moz_legacy_property_condition(&conditions[0])
+                && tailwind_webkit_legacy_property_condition(&conditions[1]))
+                || (tailwind_webkit_legacy_property_condition(&conditions[0])
+                    && tailwind_moz_legacy_property_condition(&conditions[1]))
         }
         _ => false,
     }
@@ -610,7 +843,7 @@ fn tailwind_legacy_property_condition(condition: &SupportsCondition<'_>) -> bool
 
 fn tailwind_moz_legacy_property_condition(condition: &SupportsCondition<'_>) -> bool {
     match condition {
-        SupportsCondition::And(conditions) => {
+        SupportsCondition::And(conditions) if conditions.len() == 2 => {
             let mut color = false;
             let mut orient = false;
 
@@ -620,7 +853,7 @@ fn tailwind_moz_legacy_property_condition(condition: &SupportsCondition<'_>) -> 
                 });
 
                 color |= matches!(condition, SupportsCondition::Not(condition) if property_condition(condition, |property_id, value| {
-                    property_id == &PropertyId::Color && value.contains("rgb(from red r g b")
+                    property_id == &PropertyId::Color && valid_color_function(value, b"rgb(from red r g b")
                 }));
 
                 if color && orient {
@@ -657,7 +890,7 @@ fn tailwind_placeholder_supports(conditions: &[SupportsCondition]) -> bool {
 
 fn tailwind_webkit_legacy_property_condition(condition: &SupportsCondition<'_>) -> bool {
     match condition {
-        SupportsCondition::And(conditions) => {
+        SupportsCondition::And(conditions) if conditions.len() == 2 => {
             let mut hyphens = false;
             let mut margin_trim = false;
 
@@ -749,12 +982,27 @@ fn unwrap_modern_supports(rules: &mut CssRuleList<'_>) {
 
     rules.0 = next;
 }
+
+fn valid_color_function(value: &str, prefix: &[u8]) -> bool {
+    let value = value.trim_ascii();
+
+    value
+        .as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|name| name.eq_ignore_ascii_case(prefix))
+        && matches!(
+            Property::parse_string(PropertyId::Color, value, ParserOptions::default()),
+            Ok(Property::Color(_))
+        )
+}
+
 fn validate_css_structure(css: &str) -> Result<(), String> {
     #[derive(Clone, Copy)]
     enum State {
         Normal,
         Comment,
-        String(u8),
+        String(u8, bool),
+        Url,
     }
 
     let bytes = css.as_bytes();
@@ -770,8 +1018,12 @@ fn validate_css_structure(css: &str) -> Result<(), String> {
                     index += 2;
                 }
                 quote @ (b'\'' | b'"') => {
-                    state = State::String(quote);
+                    state = State::String(quote, false);
                     index += 1;
+                }
+                b'u' | b'U' if css_url_start(bytes, index) => {
+                    state = State::Url;
+                    index += 4;
                 }
                 b'\\' => {
                     if index + 1 == bytes.len() {
@@ -814,7 +1066,7 @@ fn validate_css_structure(css: &str) -> Result<(), String> {
                     index += 1;
                 }
             }
-            State::String(quote) => match bytes[index] {
+            State::String(quote, url) => match bytes[index] {
                 b'\\' => {
                     index += 1;
 
@@ -825,11 +1077,23 @@ fn validate_css_structure(css: &str) -> Result<(), String> {
                     }
                 }
                 byte if byte == quote => {
-                    state = State::Normal;
+                    state = if url { State::Url } else { State::Normal };
                     index += 1;
                 }
                 b'\n' | b'\r' | 0x0c => {
                     return Err(format!("unterminated CSS string at byte {index}"));
+                }
+                _ => index += 1,
+            },
+            State::Url => match bytes[index] {
+                b'\\' => index = (index + 2).min(bytes.len()),
+                quote @ (b'\'' | b'"') => {
+                    state = State::String(quote, true);
+                    index += 1;
+                }
+                b')' => {
+                    state = State::Normal;
+                    index += 1;
                 }
                 _ => index += 1,
             },
@@ -838,7 +1102,8 @@ fn validate_css_structure(css: &str) -> Result<(), String> {
 
     match state {
         State::Comment => return Err("unterminated CSS comment".to_owned()),
-        State::String(_) => return Err("unterminated CSS string".to_owned()),
+        State::String(_, _) => return Err("unterminated CSS string".to_owned()),
+        State::Url => return Err("unterminated CSS URL".to_owned()),
         State::Normal => {}
     }
 

@@ -2,7 +2,14 @@ defmodule PhoenixAssetPipeline.Config do
   @moduledoc false
 
   @already_compressed_extensions :phoenix_asset_pipeline
-                                 |> Application.compile_env(:already_compressed_extensions, ~w(.avif .png .webp))
+                                 |> Application.compile_env(
+                                   :already_compressed_extensions,
+                                   ~w(
+                                     .7z .aac .apk .avif .avi .br .bz2 .cab .dmg .docx .eot .epub .flac .gif .gz
+                                     .heic .heif .ico .jar .jpeg .jpg .m4a .m4v .mov .mp3 .mp4 .ogg .ogv .opus .otf
+                                     .pdf .png .pptx .rar .tgz .ttf .webm .webp .woff .woff2 .xlsx .xz .zip .zst
+                                   )
+                                 )
                                  |> Map.new(fn extension when is_binary(extension) ->
                                    {String.downcase(extension), true}
                                  end)

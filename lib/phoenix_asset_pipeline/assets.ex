@@ -5,6 +5,8 @@ defmodule PhoenixAssetPipeline.Assets do
   alias PhoenixAssetPipeline.Assets.Images
   alias PhoenixAssetPipeline.Assets.Sprites
   alias PhoenixAssetPipeline.Config
+  alias PhoenixAssetPipeline.Digest
+  alias PhoenixAssetPipeline.Files
 
   def build(source \\ sources())
 
@@ -76,22 +78,34 @@ defmodule PhoenixAssetPipeline.Assets do
     end
   end
 
-  def watch_dirs(static_dir \\ Config.static_dir(), assets_dir \\ Config.assets_dir()) do
+  def watch_sources(static_dir \\ Config.static_dir(), assets_dir \\ Config.assets_dir()) do
     source = sources(assets_dir)
+    {dependency_dirs, files} = Bun.watch_sources(assets_dir)
 
-    ([
-       static_dir,
-       assets_dir,
-       Config.colocated_dir(),
-       Path.join(project_dir(assets_dir), "config"),
-       Path.join(project_dir(assets_dir), "lib"),
-       Path.join(project_dir(assets_dir), "priv")
-     ] ++ List.wrap(Config.application_ebin_dir()))
-    |> Kernel.++(sprite_source_dirs(source))
-    |> Enum.map(&Path.expand/1)
-    |> Enum.uniq()
-    |> Enum.filter(&File.dir?/1)
-    |> drop_nested_dirs()
+    dirs =
+      ([
+         static_dir,
+         assets_dir,
+         Config.colocated_dir(),
+         Path.join(project_dir(assets_dir), "config"),
+         Path.join(project_dir(assets_dir), "lib"),
+         Path.join(project_dir(assets_dir), "priv")
+       ] ++ List.wrap(Config.application_ebin_dir()))
+      |> Kernel.++(sprite_source_dirs(source))
+      |> Kernel.++(dependency_dirs)
+      |> Enum.map(&Path.expand/1)
+      |> Enum.uniq()
+      |> Enum.filter(&File.dir?/1)
+
+    watch_dirs =
+      files
+      |> Enum.map(&Path.dirname/1)
+      |> Kernel.++(dirs)
+      |> Enum.uniq()
+      |> Enum.filter(&File.dir?/1)
+      |> drop_nested_dirs()
+
+    {watch_dirs, dirs, MapSet.new(files)}
   end
 
   defp asset_signature_term({:asset, path, digest, _}), do: {:asset, path, digest}
@@ -99,7 +113,7 @@ defmodule PhoenixAssetPipeline.Assets do
 
   defp asset_source_term(path, relative) do
     content = File.read!(path)
-    digest = :erlang.md5(content)
+    digest = Digest.binary(content)
 
     if String.starts_with?(relative, "img/"),
       do: {:asset, relative, digest, content},
@@ -108,9 +122,9 @@ defmodule PhoenixAssetPipeline.Assets do
 
   defp asset_source_terms(assets_dir) do
     assets_dir
-    |> regular_files()
+    |> Files.regular_files()
     |> Enum.reduce([], fn path, terms ->
-      relative = path |> Path.relative_to(assets_dir) |> forward_path()
+      relative = Files.relative_path(path, assets_dir)
 
       if relative in ["package.json", "bun.lock"] do
         terms
@@ -142,7 +156,7 @@ defmodule PhoenixAssetPipeline.Assets do
 
   defp colocated_source_terms do
     Config.colocated_dir()
-    |> regular_files()
+    |> Files.regular_files()
     |> Enum.map(&source_term(:colocated, &1, Config.build_path()))
   end
 
@@ -154,48 +168,16 @@ defmodule PhoenixAssetPipeline.Assets do
 
   defp file_digest(path) do
     case File.read(path) do
-      {:ok, content} -> :erlang.md5(content)
+      {:ok, content} -> Digest.binary(content)
       {:error, :enoent} -> :missing
       {:error, reason} -> raise File.Error, reason: reason, action: "read file", path: path
     end
   end
 
-  defp forward_path(path), do: String.replace(path, "\\", "/")
-
   defp project_dir(assets_dir), do: Path.dirname(Path.expand(assets_dir))
 
-  defp regular_entry(_, "." <> _), do: []
-  defp regular_entry(_, "node_modules"), do: []
-
-  defp regular_entry(dir, entry) do
-    path = Path.join(dir, entry)
-
-    case File.stat(path) do
-      {:ok, %{type: :directory}} -> regular_files_in(path)
-      {:ok, %{type: :regular}} -> [path]
-      {:ok, _} -> []
-      {:error, :enoent} -> []
-      {:error, reason} -> raise File.Error, reason: reason, action: "stat asset source", path: path
-    end
-  end
-
-  defp regular_files(dir) do
-    dir
-    |> Path.expand()
-    |> regular_files_in()
-    |> Enum.sort()
-  end
-
-  defp regular_files_in(dir) do
-    case File.ls(dir) do
-      {:ok, entries} -> Enum.flat_map(entries, &regular_entry(dir, &1))
-      {:error, :enoent} -> []
-      {:error, reason} -> raise File.Error, reason: reason, action: "list asset sources", path: dir
-    end
-  end
-
   defp source_term(type, path, root) do
-    {type, path |> Path.relative_to(root) |> forward_path(), file_digest(path)}
+    {type, Files.relative_path(path, root), file_digest(path)}
   end
 
   defp sprite_source_dirs(nil), do: []
@@ -203,7 +185,11 @@ defmodule PhoenixAssetPipeline.Assets do
 
   defp unique_assets(assets) do
     assets
-    |> Enum.reduce(%{}, fn asset, acc -> Map.put(acc, elem(asset, 0), asset) end)
+    |> Enum.reduce(%{}, fn asset, acc ->
+      path = elem(asset, 0)
+      if is_map_key(acc, path), do: raise(ArgumentError, "duplicate asset output path: #{inspect(path)}")
+      Map.put(acc, path, asset)
+    end)
     |> Map.values()
     |> Enum.sort()
   end

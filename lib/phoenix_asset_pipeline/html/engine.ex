@@ -11,7 +11,7 @@ defmodule PhoenixAssetPipeline.HTML.Engine do
   @behaviour Phoenix.Template.Engine
 
   alias PhoenixAssetPipeline.HTML.ClassAttrs
-  alias PhoenixAssetPipeline.HTML.Minifier
+  alias PhoenixAssetPipeline.HTML.Macros
 
   @impl true
   def compile(path, _) do
@@ -34,7 +34,6 @@ defmodule PhoenixAssetPipeline.HTML.Engine do
 
     path
     |> File.read!()
-    |> ClassAttrs.compile(options)
-    |> Minifier.minify_rendered_static()
+    |> ClassAttrs.compile(options, &Macros.__class_value_ast__/2)
   end
 end

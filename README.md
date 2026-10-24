@@ -6,7 +6,7 @@ Build, optimize, cache, and serve Phoenix assets from one manifest.
 
 ## Requirements
 
-Elixir 1.18+, Erlang/OTP 28+, Rust 1.98+, and Phoenix LiveView. The pipeline installs and manages its pinned Bun version.
+Elixir 1.20+, Erlang/OTP 29+, Rust 1.98+, and Phoenix LiveView 1.2+. The pipeline installs and manages its pinned Bun version.
 
 ## Installation
 
@@ -14,7 +14,7 @@ Add the dependency and compilers to `mix.exs`:
 
 ```elixir
 def deps do
-  [{:phoenix_asset_pipeline, "~> 4.1"}]
+  [{:phoenix_asset_pipeline, "~> 5.0"}]
 end
 
 def project do
@@ -96,6 +96,20 @@ plug PhoenixAssetPipeline.Plug.Static, only: MyAppWeb.static_paths()
 plug MyAppWeb.Router
 ```
 
+## Early hints
+
+After `put_private_phoenix_assigns`, select the JavaScript entry points used by
+that response:
+
+```elixir
+PhoenixAssetPipeline.Plug.early_hints(conn, scripts: ["app.js"])
+```
+
+Entry names include the `.js` extension. Each selected preload carries its SRI
+hash and uses anonymous CORS, matching `script("app", crossorigin: true)`.
+The default `scripts: []` sends only a preconnect hint for the static origin.
+Use `:links` for additional configured preload links.
+
 ## Classes
 
 Classes are minified consistently in CSS, HEEx, and Elixir. Use `class/1` in Elixir expressions:
@@ -147,12 +161,26 @@ Default inputs:
 - `assets/svg/**/*.svg` and `assets/svg/sprites/<name>/*.svg`
 - `priv/static/**`
 
-Declare Bun packages in `assets/package.json`. Dependencies are installed when the package or lockfile changes; production requires `assets/bun.lock` and uses `--frozen-lockfile`.
+Declare Bun packages in `assets/package.json`. Dependencies are installed when the package or lockfile changes; production requires `assets/bun.lock` and uses `--frozen-lockfile`. The managed Bun 1.4.3 archive and executable are verified against pinned SHA-256 checksums before execution. TypeScript entry points are checked before Bun writes build outputs.
 
-Images are auto-oriented and converted to AVIF, WebP, and PNG with libvips. The source is the highest density: with `image_densities: [1, 2]`, a 40×20 source produces 20×10 and 40×20 variants. `<.picture>` renders responsive sources and a PNG fallback; `width` and `height` reserve space during loading.
+Bun downloads use OTP's system CA certificates. Set `:bun_cacertfile` for a custom CA bundle.
+
+JavaScript builds support JavaScript and CSS imports. Imports that emit separate binary files fail the build; keep images and other static files in the asset directories above. Type-only imports, module-resolution directories, Tailwind imports, and external `@source` files participate in cache invalidation and development watching.
+
+Class attribute selectors with `~=` and single-token `=` are renamed together with HTML classes. Case-insensitive, partial-match, namespaced, and whitespace-containing equality selectors are rejected because their matching behavior cannot be preserved by class obfuscation and class normalization.
+
+Images are auto-oriented and converted to AVIF, WebP, and PNG with libvips. The source is the highest density: with `image_densities: [1, 2]`, a 40×20 source produces 20×10 and 40×20 variants. `<.picture>` renders responsive sources and a PNG fallback; `width` and `height` reserve space during loading. Set `source_width` to the source's pixel width after orientation so each candidate has its actual width descriptor. `sizes` defaults to the displayed `width` in pixels; override it for images whose CSS width changes with the viewport.
 
 ```heex
-<.picture src="hero" alt="Welcome" width="640" height="480" />
+<.picture src="hero" alt="Welcome" source_width={1280} width="640" height="480" />
+<.picture
+  src="hero"
+  alt="Welcome"
+  source_width={1280}
+  width="640"
+  height="480"
+  sizes="(max-width: 640px) 100vw, 640px"
+/>
 ```
 
 Images default to densities `[1, 2]` and a 40,000,000-pixel input limit. Override `image_densities` or `image_max_pixels` when needed.
@@ -210,11 +238,42 @@ Internal SVG IDs are namespaced to prevent collisions. Use `namespace_ids: false
 
 ### Browser headers
 
-Use `secure_browser_headers/1` to generate cached headers. To allow DOMPurify, replace the Trusted Types policy list at compile time:
+Install the canonical policy in the browser pipeline. HTML responses must contain exactly this one CSP header; missing, duplicate, or manually modified policies fail closed.
+
+```elixir
+plug :put_secure_browser_headers, PhoenixAssetPipeline.Plug.secure_browser_headers()
+```
+
+Install the manifest-backed policy and report handling in the endpoint after
+`:put_private_phoenix_assigns` and before body parsers and the router:
+
+```elixir
+plug PhoenixAssetPipeline.Plug, :put_content_security_policy
+plug PhoenixAssetPipeline.Plug, :put_reporting_endpoints
+plug PhoenixAssetPipeline.Plug, :csp_report
+```
+
+The `/csp-report` endpoint accepts bounded `application/reports+json` batches and never logs report contents. To allow DOMPurify, replace the Trusted Types policy list at compile time:
 
 ```elixir
 config :phoenix_asset_pipeline, trusted_types: ~w(decodeHTMLEntitiesPolicy default dompurify)
 ```
+
+Add application-specific directives at compile time instead of modifying the header:
+
+```elixir
+config :phoenix_asset_pipeline,
+  csp_directives: %{
+    "connect-src" => ["'self'", "https://challenges.cloudflare.com"],
+    "frame-src" => ["'self'", "https://challenges.cloudflare.com"]
+  }
+```
+
+Directive names must be lowercase, and values must be lists of ASCII tokens without
+whitespace, commas, or semicolons. Empty lists support valueless directives.
+The canonical directives and all `script-src`/`style-src` variants are reserved.
+The configured policy and manifest-backed header share these directives and retain
+the existing header cache.
 
 ## Build
 

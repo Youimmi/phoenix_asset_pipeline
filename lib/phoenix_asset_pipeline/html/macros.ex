@@ -8,10 +8,10 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   """
 
   alias PhoenixAssetPipeline.HTML.ClassAttrs
-  alias PhoenixAssetPipeline.HTML.Minifier
   alias PhoenixAssetPipeline.HTML.ModuleClasses
 
   @fixed_mappings_attribute :phoenix_asset_pipeline_fixed_class_mappings
+  @html_engine Module.concat(["PhoenixAssetPipeline", "HTML", "Engine"])
   @track_mapping_resource PhoenixAssetPipeline.Config.precompiled_manifest?()
 
   defmacro __before_compile__(env) do
@@ -95,7 +95,7 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   defmacro embed_templates(pattern, opts \\ []) do
     engines =
       Phoenix.Template.engines()
-      |> Map.put(:heex, PhoenixAssetPipeline.HTML.Engine)
+      |> Map.put(:heex, @html_engine)
       |> Macro.escape()
 
     quote bind_quoted: [engines: engines, opts: opts, pattern: pattern] do
@@ -119,16 +119,18 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
       raise "~H requires a variable named \"assigns\" to exist and be set to a map"
     end
 
-    ast =
-      ClassAttrs.compile(expr,
+    ClassAttrs.compile(
+      expr,
+      [
         file: __CALLER__.file,
         line: __CALLER__.line + 1,
         caller: __CALLER__,
         indentation: meta[:indentation] || 0,
+        minify: modifiers == [],
         tag_handler: Phoenix.LiveView.HTMLEngine
-      )
-
-    if modifiers == [], do: Minifier.minify_rendered_static(ast), else: ast
+      ],
+      &__class_value_ast__/2
+    )
   end
 
   defp choice_condition(true), do: true

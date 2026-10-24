@@ -46,7 +46,16 @@ defmodule PhoenixAssetPipeline.HTML.Tailwind do
     GenServer.call(__MODULE__, {Path.expand(stylesheet), classes}, 30_000)
   end
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  @impl true
+  def handle_call({stylesheet, classes}, _, port) do
+    Port.command(port, [JSON.encode!([stylesheet, classes]), "\n"])
+    {:reply, read_response(port, []), port}
+  end
+
+  @impl true
+  def handle_info({port, {:exit_status, status}}, port) do
+    {:stop, {:tailwind_exit, status}, port}
+  end
 
   @impl true
   def init(_) do
@@ -63,16 +72,7 @@ defmodule PhoenixAssetPipeline.HTML.Tailwind do
     {:ok, port}
   end
 
-  @impl true
-  def handle_call({stylesheet, classes}, _, port) do
-    Port.command(port, [JSON.encode!([stylesheet, classes]), "\n"])
-    {:reply, read_response(port, []), port}
-  end
-
-  @impl true
-  def handle_info({port, {:exit_status, status}}, port) do
-    {:stop, {:tailwind_exit, status}, port}
-  end
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   defp read_response(port, parts) do
     receive do

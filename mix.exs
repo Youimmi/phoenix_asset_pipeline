@@ -1,9 +1,9 @@
 defmodule PhoenixAssetPipeline.MixProject do
   use Mix.Project
 
-  @minimum_otp_release 28
+  @minimum_otp_release 29
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
-  @version "4.2.0"
+  @version "5.0.0"
 
   if String.to_integer(System.otp_release()) < @minimum_otp_release do
     raise("Requires Erlang/OTP #{@minimum_otp_release} or later")
@@ -15,10 +15,6 @@ defmodule PhoenixAssetPipeline.MixProject do
     ]
   end
 
-  def cli do
-    [preferred_envs: [precommit: :test]]
-  end
-
   def project do
     [
       aliases: aliases(),
@@ -26,7 +22,7 @@ defmodule PhoenixAssetPipeline.MixProject do
       deps: deps(),
       description: "Asset pipeline for Phoenix applications",
       docs: docs(),
-      elixir: "~> 1.18",
+      elixir: "~> 1.20",
       elixirc_options: [warnings_as_errors: true],
       package: package(),
       source_url: @source_url,
@@ -50,8 +46,7 @@ defmodule PhoenixAssetPipeline.MixProject do
         "cmd cargo fmt --all -- --check",
         "format --check-formatted --dry-run",
         "deps.unlock --unused",
-        "format",
-        "test"
+        "format"
       ],
       setup: [
         "deps.get",
@@ -73,9 +68,10 @@ defmodule PhoenixAssetPipeline.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:file_system, "~> 1.1"},
+      {:floki, "~> 0.38", runtime: false},
       {:mime, "~> 2.0"},
       {:phoenix_html, "~> 4.2"},
-      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_live_view, "~> 1.2"},
       {:plug, "~> 1.20"},
       {:rustler, "~> 0.38", runtime: false},
       {:styler, "~> 1.12", only: [:dev, :test], runtime: false},
