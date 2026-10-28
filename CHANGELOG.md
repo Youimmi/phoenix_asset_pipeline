@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.0.1
+
+- Preserve CSS comments while rewriting selectors and custom properties
+- Parse Elixir and HEEx for SVG sprite references, including braced literal attributes, without treating comments or documentation as dependencies
+- Preserve whitespace-sensitive HEEx text and honor `phx-no-format` in inline and file templates
+- Share short-class allocation and prefix normalization, avoiding repeated suffix scans for module-scope classes
+- Update native dependencies, including fearless_simd 1.2.0, and require mbrotli 0.5.17 or later
+- Ignore byte ranges when `If-Range` cannot match a strong ETag, including digested assets without ETags
+- Accept `If-None-Match: *` only as a standalone value, preserving weak ETag and list matching
+- Reject ETag matches followed by invalid suffixes or missing list separators
+- Share range validation without scanning `If-Range` on requests without a byte range
+
 ## 5.0.0
 
 - Replace Brotli with compression-only mbrotli and reuse bounded encoder workspaces per dirty scheduler thread

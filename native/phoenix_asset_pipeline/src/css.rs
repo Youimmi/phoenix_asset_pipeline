@@ -784,6 +784,19 @@ fn remove_modern_fallbacks(rules: &mut CssRuleList<'_>) {
 }
 
 fn skip_css_literal(bytes: &[u8], index: usize) -> Option<usize> {
+    if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+        let mut cursor = index + 2;
+
+        while cursor < bytes.len() {
+            if bytes[cursor] == b'*' && bytes.get(cursor + 1) == Some(&b'/') {
+                return Some(cursor + 2);
+            }
+            cursor += 1;
+        }
+
+        return Some(cursor);
+    }
+
     if matches!(bytes[index], b'\'' | b'"') {
         return Some(skip_css_string(bytes, index));
     }

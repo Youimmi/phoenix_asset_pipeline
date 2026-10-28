@@ -11,6 +11,6 @@ name = "phoenix_asset_pipeline"
 [dependencies]
 ahash = "0.8"
 lightningcss = { default-features = false, features = ["visitor"], version = "1.0.0-alpha" }
-mbrotli = { default-features = false, features = ["std", "compression"], version = "0.5.15" }
+mbrotli = { default-features = false, features = ["std", "compression"], version = "0.5.17" }
 parcel_selectors = { default-features = false, version = "0.28" }
 rustler = { default-features = false, features = ["nif_version_2_18"], version = "0.39" }

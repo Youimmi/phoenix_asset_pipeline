@@ -1,15 +1,12 @@
 defmodule PhoenixAssetPipeline.Assets.Sprites do
   @moduledoc false
 
+  alias Phoenix.LiveView.TagEngine.Parser
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.Digest
   alias PhoenixAssetPipeline.Files
+  alias PhoenixAssetPipeline.HTML.Entities
 
-  @direct_sprite_ref_pattern ~r/svg_sprite_href\(\s*"([^"#{}]+)#([^"#{}]+)"\s*\)/
-  @icon_value_pattern ~r/(?:\bicon:|\sicon\s*=)\s*"([^"]+)"|\bicon_name\([^)]*\),\s*do:\s*"([^"]+)"/
-  @literal_attr_pattern ~r/\s+(name|sprite)\s*=\s*"([^"]*)"/
-  @component_pattern ~r/<\.(menu_icon|icon)\b[^>]*>/s
-  @source_exts ~w(.ex .heex)
   @sprite_group_type :svg_sprite_group
   @sprite_source_type :svg_sprite_source
 
@@ -98,52 +95,112 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     end)
   end
 
-  defp collect_direct_sprite_refs(content, ids_by_sprite) do
-    Enum.reduce(Regex.scan(@direct_sprite_ref_pattern, content), ids_by_sprite, fn [_, sprite, id], ids_by_sprite ->
-      put_sprite_id(ids_by_sprite, sprite, id)
-    end)
+  defp collect_ast({:@, _, [{kind, _, _}]}, ids) when kind in [:doc, :moduledoc, :typedoc], do: ids
+  defp collect_ast({:quote, _, _}, ids), do: ids
+
+  defp collect_ast({:sigil_H, _, [{:<<>>, _, [source]}, _]}, ids) when is_binary(source) do
+    collect_heex(source, ids)
   end
 
-  defp collect_icon_component_ref(tag, ids_by_sprite) do
-    {name, sprite} = literal_attrs(tag)
+  defp collect_ast({:svg_sprite_href, _, [value]}, ids) when is_binary(value), do: collect_sprite_href(value, ids)
 
-    if is_binary(name),
-      do: put_sprite_id(ids_by_sprite, sprite || "icons.svg", name),
-      else: ids_by_sprite
+  defp collect_ast({{:., _, [_, :svg_sprite_href]}, _, [value]}, ids) when is_binary(value) do
+    collect_sprite_href(value, ids)
   end
 
-  defp collect_icon_value_refs(content, %{"icons.svg" => _} = ids_by_sprite) do
-    Enum.reduce(Regex.scan(@icon_value_pattern, content), ids_by_sprite, fn [_ | captures], ids_by_sprite ->
-      put_icons_id(first_capture(captures), ids_by_sprite)
-    end)
+  defp collect_ast({kind, _, [{:icon_name, _, _}, [do: value]]}, ids) when kind in [:def, :defp] and is_binary(value),
+    do: put_icons_id(value, ids)
+
+  defp collect_ast({:icon, value}, ids) when is_binary(value), do: put_icons_id(value, ids)
+  defp collect_ast({_, _, args}, ids) when is_list(args), do: collect_ast(args, ids)
+  defp collect_ast({left, right}, ids), do: collect_ast(right, collect_ast(left, ids))
+  defp collect_ast([node | nodes], ids), do: collect_ast(nodes, collect_ast(node, ids))
+  defp collect_ast(_, ids), do: ids
+
+  defp collect_attribute({key, value, _}, {name, sprite, ids}) do
+    {value, ids} =
+      case value do
+        {:expr, expression, _} ->
+          ast = Code.string_to_quoted!(expression)
+          {ast, collect_ast(ast, ids)}
+
+        {:string, value, _} when key in ["name", "sprite", "icon"] ->
+          {Entities.decode_attribute(value), ids}
+
+        _ ->
+          {nil, ids}
+      end
+
+    case {key, value} do
+      {"name", value} when is_binary(value) -> {value, sprite, ids}
+      {"sprite", value} when is_binary(value) -> {name, value, ids}
+      {"icon", value} when is_binary(value) -> {name, sprite, put_icons_id(value, ids)}
+      _ -> {name, sprite, ids}
+    end
   end
 
-  defp collect_icon_value_refs(_, ids_by_sprite), do: ids_by_sprite
-
-  defp collect_menu_icon_component_ref(tag, %{"icons.svg" => _} = ids_by_sprite) do
-    {name, sprite} = literal_attrs(tag)
-
-    ids_by_sprite = put_icons_id(name, ids_by_sprite)
-
-    put_icons_id(sprite, ids_by_sprite)
+  defp collect_heex(source, ids, file \\ "nofile") do
+    source
+    |> Parser.parse!(
+      file: file,
+      tag_handler: Phoenix.LiveView.HTMLEngine,
+      skip_macro_components: true,
+      strip_eex_comments: true,
+      prune_text_after_slots: false
+    )
+    |> Map.fetch!(:nodes)
+    |> Enum.reduce(ids, &collect_heex_node/2)
   end
 
-  defp collect_menu_icon_component_ref(_, ids_by_sprite), do: ids_by_sprite
-
-  defp collect_source_file(path, ids_by_sprite) do
-    if Path.extname(path) in @source_exts,
-      do: path |> File.read!() |> collect_used_sprite_ids(ids_by_sprite),
-      else: ids_by_sprite
+  defp collect_heex_node({:block, type, name, attrs, children, _, _}, ids) do
+    Enum.reduce(children, collect_tag(type, name, attrs, ids), &collect_heex_node/2)
   end
 
-  defp collect_used_sprite_ids(content, ids_by_sprite) do
-    ids_by_sprite = collect_direct_sprite_refs(content, ids_by_sprite)
-    ids_by_sprite = collect_icon_value_refs(content, ids_by_sprite)
+  defp collect_heex_node({:self_close, type, name, attrs, _}, ids), do: collect_tag(type, name, attrs, ids)
 
-    Enum.reduce(Regex.scan(@component_pattern, content), ids_by_sprite, fn
-      [tag, "menu_icon"], ids_by_sprite -> collect_menu_icon_component_ref(tag, ids_by_sprite)
-      [tag, "icon"], ids_by_sprite -> collect_icon_component_ref(tag, ids_by_sprite)
-    end)
+  defp collect_heex_node({type, expression, _}, ids) when type in [:eex, :body_expr] do
+    expression |> Code.string_to_quoted!() |> collect_ast(ids)
+  end
+
+  defp collect_heex_node({:eex_block, expression, clauses, _}, ids) do
+    state = {ids, String.ends_with?(String.trim_trailing(expression), "->")}
+
+    {clauses, {ids, _}} =
+      Enum.map_reduce(clauses, state, fn {nodes, expression, _}, {ids, previous_clause?} ->
+        clause? = String.ends_with?(String.trim_trailing(expression), "->")
+        # The first case/cond clause has no preceding body; empty branches still need nil.
+        body = if clause? and not previous_clause?, do: "\n", else: "\nnil\n"
+        {[body, expression], {Enum.reduce(nodes, ids, &collect_heex_node/2), clause?}}
+      end)
+
+    [expression | clauses] |> IO.iodata_to_binary() |> Code.string_to_quoted!() |> collect_ast(ids)
+  end
+
+  defp collect_heex_node(_, ids), do: ids
+
+  defp collect_source_file(path, ids) do
+    case Path.extname(path) do
+      ".ex" -> path |> File.read!() |> Code.string_to_quoted!(file: path) |> collect_ast(ids)
+      ".heex" -> path |> File.read!() |> collect_heex(ids, path)
+      _ -> ids
+    end
+  end
+
+  defp collect_sprite_href(value, ids) do
+    case :binary.split(value, "#", [:global]) do
+      [sprite, id] when sprite != "" and id != "" -> put_sprite_id(ids, sprite, id)
+      _ -> ids
+    end
+  end
+
+  defp collect_tag(type, tag, attrs, ids) do
+    {name, sprite, ids} = Enum.reduce(attrs, {nil, nil, ids}, &collect_attribute/2)
+
+    case {type, tag} do
+      {:local_component, "icon"} when is_binary(name) -> put_sprite_id(ids, sprite || "icons.svg", name)
+      {:local_component, "menu_icon"} -> put_icons_id(sprite, put_icons_id(name, ids))
+      _ -> ids
+    end
   end
 
   defp configured_entries(assets_dir, config) do
@@ -269,15 +326,6 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
       {:ok, %{type: type}} -> raise ArgumentError, "invalid SVG sprite source type #{inspect(type)}: #{path}"
       {:error, reason} -> raise File.Error, reason: reason, action: "stat SVG sprite source", path: path
     end
-  end
-
-  defp first_capture(captures), do: Enum.find(captures, &(is_binary(&1) and &1 != ""))
-
-  defp literal_attrs(tag) do
-    Enum.reduce(Regex.scan(@literal_attr_pattern, tag), {nil, nil}, fn
-      [_, "name", value], {_, sprite} -> {value, sprite}
-      [_, "sprite", value], {name, _} -> {name, value}
-    end)
   end
 
   defp merge_sprite_option!(_, _, nil, value), do: value

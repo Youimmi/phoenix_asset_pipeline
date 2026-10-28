@@ -14,6 +14,7 @@ defmodule PhoenixAssetPipeline do
 
   alias PhoenixAssetPipeline.Assets
   alias PhoenixAssetPipeline.Cache
+  alias PhoenixAssetPipeline.ClassNames
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.Digest
   alias PhoenixAssetPipeline.Files
@@ -149,9 +150,6 @@ defmodule PhoenixAssetPipeline do
   """
   def static_dir, do: Config.static_dir()
 
-  defp add_postfix(char, 0), do: char
-  defp add_postfix(char, count), do: "#{char}#{count}"
-
   defp application_modules do
     [Config.otp_app(), :phoenix_asset_pipeline]
     |> Enum.uniq()
@@ -188,7 +186,7 @@ defmodule PhoenixAssetPipeline do
   end
 
   defp build_classes(class_counts, fixed_classes) do
-    allocation = {fixed_classes, reverse_fixed_classes!(fixed_classes), %{}}
+    allocation = ClassNames.new(fixed_classes)
 
     class_counts
     |> Enum.reduce(allocation, fn {class_name, _}, allocation ->
@@ -597,7 +595,7 @@ defmodule PhoenixAssetPipeline do
 
   defp obfuscate_phx_utility(utility_class, allocation, fixed_classes) do
     if fixed_classes != nil and Map.has_key?(fixed_classes, utility_class) do
-      short_name = utility_class |> AnyAscii.transliterate() |> prefix_char()
+      short_name = ClassNames.prefix(utility_class)
       {short_name, allocation}
     else
       obfuscate_class(utility_class, allocation, fixed_classes)
@@ -612,7 +610,7 @@ defmodule PhoenixAssetPipeline do
 
     short_name = variant_short_name <> ":" <> utility_short_name
 
-    put_obfuscated_class(short_name, class_name, allocation)
+    ClassNames.allocate(short_name, class_name, allocation)
   end
 
   defp obfuscate_unreserved_class(
@@ -646,12 +644,7 @@ defmodule PhoenixAssetPipeline do
   end
 
   defp obfuscate_unreserved_class(class_name, allocation, _) do
-    short_name =
-      class_name
-      |> AnyAscii.transliterate()
-      |> prefix_char()
-
-    put_obfuscated_class(short_name, class_name, allocation)
+    ClassNames.allocate(ClassNames.prefix(class_name), class_name, allocation)
   end
 
   defp persisted_values(mod, key) do
@@ -670,17 +663,6 @@ defmodule PhoenixAssetPipeline do
         :error
     end
   end
-
-  defp prefix_char([char | _]) when char in ?a..?z do
-    <<char::utf8>>
-  end
-
-  defp prefix_char([char | _]) when char in ?A..?Z do
-    String.downcase(<<char::utf8>>)
-  end
-
-  defp prefix_char([_ | chars]), do: prefix_char(chars)
-  defp prefix_char(_), do: "c"
 
   defp put_asset_content(contents, digest, content, compress?, static?, integrity?) do
     case Map.fetch(contents, digest) do
@@ -727,22 +709,6 @@ defmodule PhoenixAssetPipeline do
     end
   end
 
-  defp put_obfuscated_class(short_name, class_name, {_, _, next_suffixes} = allocation) do
-    put_obfuscated_class(short_name, class_name, allocation, Map.get(next_suffixes, short_name, 0))
-  end
-
-  defp put_obfuscated_class(short_name, class_name, {classes, short_names, next_suffixes} = allocation, count) do
-    candidate = add_postfix(short_name, count)
-
-    if Map.has_key?(short_names, candidate) do
-      put_obfuscated_class(short_name, class_name, allocation, count + 1)
-    else
-      {candidate,
-       {Map.put(classes, class_name, candidate), Map.put(short_names, candidate, class_name),
-        Map.put(next_suffixes, short_name, count + 1)}}
-    end
-  end
-
   defp put_template_record(mod, records) do
     case template_module(mod) do
       {[], [], []} ->
@@ -779,21 +745,6 @@ defmodule PhoenixAssetPipeline do
     Cache.read_term(encoded_asset_cache_path(), %{}, fn
       {^profile, cache} when is_map(cache) -> {:ok, cache}
       _ -> :error
-    end)
-  end
-
-  defp reverse_fixed_classes!(fixed_classes) do
-    Enum.reduce(fixed_classes, %{}, fn {class_name, short_name}, short_names ->
-      case short_names do
-        %{^short_name => ^class_name} ->
-          short_names
-
-        %{^short_name => other} ->
-          raise "fixed class name #{inspect(short_name)} is shared by #{inspect(other)} and #{inspect(class_name)}"
-
-        _ ->
-          Map.put(short_names, short_name, class_name)
-      end
     end)
   end
 

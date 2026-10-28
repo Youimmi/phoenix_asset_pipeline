@@ -2,6 +2,7 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
   @moduledoc false
 
   alias PhoenixAssetPipeline.Cache
+  alias PhoenixAssetPipeline.ClassNames
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.Digest
   alias PhoenixAssetPipeline.Files
@@ -64,19 +65,17 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     Map.update(counts, class_name, 1, &(&1 + 1))
   end
 
-  defp allocate_class(class_name, {mappings, short_names}) do
+  defp allocate_class(class_name, {mappings, _, _} = allocation) do
     case mappings do
-      %{^class_name => _} -> {mappings, short_names}
-      _ -> put_allocated_class(class_name, class_base(class_name), mappings, short_names, 0)
+      %{^class_name => _} -> allocation
+      _ -> class_name |> class_base() |> ClassNames.allocate(class_name, allocation) |> elem(1)
     end
   end
 
   defp allocate_mappings(counts, seed) do
-    short_names = reverse_mappings!(seed)
-
     counts
     |> Enum.sort_by(fn {class_name, count} -> {-count, class_name} end)
-    |> Enum.reduce({seed, short_names}, fn {class_name, _}, state ->
+    |> Enum.reduce(ClassNames.new(seed), fn {class_name, _}, state ->
       allocate_class(class_name, state)
     end)
     |> elem(0)
@@ -99,12 +98,12 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
 
   defp class_base("phx-" <> _ = class_name) do
     case split_variant(class_name) do
-      {variant, utility} -> variant <> ":" <> prefix(utility)
+      {variant, utility} -> variant <> ":" <> ClassNames.prefix(utility)
       :error -> class_name
     end
   end
 
-  defp class_base(class_name), do: prefix(class_name)
+  defp class_base(class_name), do: ClassNames.prefix(class_name)
 
   defp class_call_args({:class, _, args}) when is_list(args), do: args
 
@@ -228,17 +227,6 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
 
   defp persistent_key(path), do: {__MODULE__, path}
 
-  defp prefix(class_name) do
-    class_name
-    |> AnyAscii.transliterate()
-    |> prefix_char()
-  end
-
-  defp prefix_char([char | _]) when char in ?a..?z, do: <<char>>
-  defp prefix_char([char | _]) when char in ?A..?Z, do: <<char + 32>>
-  defp prefix_char([_ | rest]), do: prefix_char(rest)
-  defp prefix_char(_), do: "c"
-
   defp prepare_locked(path, mode) do
     scan_path = Path.join(Path.dirname(path), @scan_file)
     old_files = Cache.read_term(scan_path, %{}, &decode_scan_cache/1)
@@ -274,28 +262,6 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     app = if config = mix_project_config(), do: config[:app]
 
     to_string(app || Config.otp_app())
-  end
-
-  defp put_allocated_class(class_name, base, mappings, short_names, count) do
-    short_name = if count == 0, do: base, else: base <> Integer.to_string(count)
-
-    case short_names do
-      %{^short_name => ^class_name} -> {Map.put(mappings, class_name, short_name), short_names}
-      %{^short_name => _} -> put_allocated_class(class_name, base, mappings, short_names, count + 1)
-      _ -> {Map.put(mappings, class_name, short_name), Map.put(short_names, short_name, class_name)}
-    end
-  end
-
-  defp reverse_mappings!(mappings) do
-    Enum.reduce(mappings, %{}, fn {class_name, short_name}, short_names ->
-      case short_names do
-        %{^short_name => other} when other != class_name ->
-          raise "fixed class collision: #{inspect(short_name)} maps both #{inspect(other)} and #{inspect(class_name)}"
-
-        _ ->
-          Map.put(short_names, short_name, class_name)
-      end
-    end)
   end
 
   defp scan_ast({form, _, _}, counts) when form in [:def, :defp, :defmacro, :defmacrop, :defguard, :defguardp] do
@@ -380,7 +346,7 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
   defp valid_mappings?(mappings) do
     Enum.all?(mappings, fn {class_name, short_name} ->
       is_binary(class_name) and is_binary(short_name)
-    end) and map_size(reverse_mappings!(mappings)) == map_size(mappings)
+    end) and map_size(ClassNames.reverse!(mappings)) == map_size(mappings)
   rescue
     _ -> false
   end

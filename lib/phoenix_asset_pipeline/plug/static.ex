@@ -128,11 +128,6 @@ defmodule PhoenixAssetPipeline.Plug.Static do
     is_map_key(Config.already_compressed_extensions(), extension)
   end
 
-  defp apply_if_range(:none, _, _), do: :none
-  defp apply_if_range(range, [], _), do: range
-  defp apply_if_range(range, [etag], etag), do: range
-  defp apply_if_range(_, _, _), do: :none
-
   defp available_qvalue(data, encoding, qvalue) do
     if :erlang.is_map_key(encoding, data), do: qvalue, else: 0
   end
@@ -177,32 +172,27 @@ defmodule PhoenixAssetPipeline.Plug.Static do
   defp etag_header_match?(header, etag, index, size) do
     index = skip_etag_separators(header, index, size)
 
-    cond do
-      index >= size ->
-        false
+    if index < size do
+      start = weak_etag_start(header, index, size)
 
-      wildcard_etag?(header, index, size) ->
-        true
-
-      true ->
-        start = weak_etag_start(header, index, size)
-
-        case etag_stop(header, start, size) do
-          nil -> false
-          stop -> etag_part_match?(header, start, stop, etag) or etag_header_match?(header, etag, stop, size)
-        end
+      case etag_stop(header, start, size) do
+        nil -> false
+        stop -> etag_part_match?(header, start, stop, etag) or etag_header_match?(header, etag, stop, size)
+      end
+    else
+      false
     end
   end
 
   defp etag_part_match?(header, start, stop, etag) do
     size = stop - start
-    size == byte_size(etag) and :binary.part(header, start, size) == etag
+    size >= byte_size(etag) and trim_ascii_right(:binary.part(header, start, size), size) == etag
   end
 
   defp etag_stop(header, index, size) when index < size do
     if :binary.at(header, index) == ?" do
       case :binary.match(header, "\"", scope: {index + 1, size - index - 1}) do
-        {stop, 1} -> stop + 1
+        {stop, 1} -> etag_stop(header, stop + 1, size)
         :nomatch -> nil
       end
     else
@@ -213,7 +203,7 @@ defmodule PhoenixAssetPipeline.Plug.Static do
     end
   end
 
-  defp etag_stop(_, _, _), do: nil
+  defp etag_stop(_, index, _), do: index
 
   defp finish_range(first, "", byte_size) when first < byte_size do
     {:range, first, byte_size - 1}
@@ -227,6 +217,13 @@ defmodule PhoenixAssetPipeline.Plug.Static do
       {last, ""} when last >= 0 -> :unsatisfiable
       _ -> :none
     end
+  end
+
+  defp fresh_etag?([], _), do: false
+
+  defp fresh_etag?([header], etag) do
+    header = trim_ascii(header)
+    header == etag or header == "*" or etag_header_match?(header, etag, 0, byte_size(header))
   end
 
   defp fresh_etag?(headers, etag) do
@@ -406,17 +403,17 @@ defmodule PhoenixAssetPipeline.Plug.Static do
     end
   end
 
-  defp request_range(%{method: "GET"} = conn, byte_size) do
-    request_range(get_req_header(conn, "range"), byte_size)
+  defp request_range(%{method: "GET"} = conn, byte_size, etag) do
+    with ["bytes=" <> bytes] when byte_size(bytes) <= 41 <- get_req_header(conn, "range"),
+         if_range = get_req_header(conn, "if-range"),
+         true <- if_range == [] or match?([^etag], if_range) do
+      start_and_end(bytes, byte_size)
+    else
+      _ -> :none
+    end
   end
 
-  defp request_range([], _), do: :none
-
-  defp request_range(["bytes=" <> bytes], byte_size) when byte_size(bytes) <= 41 do
-    start_and_end(bytes, byte_size)
-  end
-
-  defp request_range(_, _), do: :none
+  defp request_range(_, _, _), do: :none
 
   defp send_asset(conn, content, byte_size, encoding, range, asset, path, opts) do
     conn
@@ -457,7 +454,7 @@ defmodule PhoenixAssetPipeline.Plug.Static do
 
       encoding ->
         {content, byte_size} = content(data, encoding)
-        send_asset(conn, content, byte_size, encoding, request_range(conn, byte_size), asset, path, opts)
+        send_asset(conn, content, byte_size, encoding, request_range(conn, byte_size, nil), asset, path, opts)
     end
   end
 
@@ -507,12 +504,7 @@ defmodule PhoenixAssetPipeline.Plug.Static do
           |> send_resp(:not_modified, "")
           |> halt()
         else
-          range =
-            conn
-            |> request_range(byte_size)
-            |> apply_if_range(get_req_header(conn, "if-range"), etag)
-
-          send_asset(conn, content, byte_size, encoding, range, asset, path, opts)
+          send_asset(conn, content, byte_size, encoding, request_range(conn, byte_size, etag), asset, path, opts)
         end
     end
   end
@@ -576,9 +568,4 @@ defmodule PhoenixAssetPipeline.Plug.Static do
   end
 
   defp weak_etag_start(_, index, _), do: index
-
-  defp wildcard_etag?(header, index, size) do
-    :binary.at(header, index) == ?* and
-      (index + 1 == size or :binary.at(header, index + 1) in [?,, ?\s, ?\t])
-  end
 end

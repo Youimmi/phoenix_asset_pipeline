@@ -130,6 +130,12 @@ Include the library's component utilities in `assets/css/app.css`:
 
 The prepare compiler resolves module attributes and component defaults before Elixir compilation. Function and HEEx expressions use the current manifest at runtime.
 
+Static HEEx minification preserves text in raw-text elements, literal whitespace-preserving
+Tailwind classes and inline styles, and SVG `xml:space="preserve"` subtrees. Use
+`phx-no-format` on a container when whitespace depends on custom CSS or dynamic values;
+this works in both `~H` and `.heex` templates and is omitted from the rendered HTML.
+The `~H` modifier `noformat` disables static minification for the entire template.
+
 ## Formatting
 
 Enable canonical Tailwind classes in `.formatter.exs`:
@@ -235,6 +241,10 @@ config :phoenix_asset_pipeline,
 ```
 
 Internal SVG IDs are namespaced to prevent collisions. Use `namespace_ids: false` only for sources without internal IDs. Optional `metadata_file` text is escaped and inserted as root metadata; changes invalidate the cache.
+
+Without `:names` or `:files`, sources are selected from literal icon references in
+Elixir and HEEx, including `name={"hero-check"}`. Comments and documentation are
+excluded. List dynamically constructed icon names explicitly with `:names`.
 
 ### Browser headers
 
