@@ -1,6 +1,14 @@
 defmodule PhoenixAssetPipeline.Cache do
   @moduledoc false
 
+  # Reads a map written as `{fingerprint, map}`, or an empty map when it is missing or stale.
+  def read_map(path, fingerprint) do
+    read_term(path, %{}, fn
+      {^fingerprint, map} when is_map(map) -> {:ok, map}
+      _ -> :error
+    end)
+  end
+
   def read_term(path, default, decode) when is_function(decode, 1) do
     with {:ok, binary} <- File.read(path),
          term = :erlang.binary_to_term(binary, [:safe]),
@@ -13,7 +21,6 @@ defmodule PhoenixAssetPipeline.Cache do
     _ -> default
   end
 
-  @doc false
   def write_atomic!(path, content) when is_binary(content) or is_list(content) do
     File.mkdir_p!(Path.dirname(path))
     publish_atomic!(path, content)

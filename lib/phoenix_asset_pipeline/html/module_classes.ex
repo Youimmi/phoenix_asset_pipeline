@@ -11,7 +11,6 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
   @scan_file "module_class_scan.term"
   @missing :__phoenix_asset_pipeline_module_classes_missing__
 
-  @doc false
   def ensure_prepared! do
     path = mapping_path()
     key = persistent_key(path)
@@ -30,7 +29,6 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     end
   end
 
-  @doc false
   def fixed_mappings!(class_names) when is_list(class_names) do
     class_names = Enum.uniq(class_names)
     mappings = Map.take(current_mappings(), class_names)
@@ -44,12 +42,10 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     end
   end
 
-  @doc false
   def mapping_path do
     Path.join([Config.manifest_cache_dir(), project_app(), @mapping_file])
   end
 
-  @doc false
   def prepare!(mode \\ :deterministic) when mode in [:deterministic, :stable] do
     path = mapping_path()
 
@@ -59,10 +55,6 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
       [node()],
       :infinity
     )
-  end
-
-  defp add_class_count(class_name, counts) do
-    Map.update(counts, class_name, 1, &(&1 + 1))
   end
 
   defp allocate_class(class_name, {mappings, _, _} = allocation) do
@@ -90,14 +82,8 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     allocate_mappings(counts, %{})
   end
 
-  defp choice_counts(truthy, falsy, condition, counts) do
-    if literal_group?(truthy) and literal_group?(falsy),
-      do: valid_choice_counts(truthy, falsy, condition, counts),
-      else: counts
-  end
-
   defp class_base("phx-" <> _ = class_name) do
-    case split_variant(class_name) do
+    case ClassNames.variant(class_name) do
       {variant, utility} -> variant <> ":" <> ClassNames.prefix(utility)
       :error -> class_name
     end
@@ -113,23 +99,32 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
   defp class_call_args(_), do: nil
 
   defp class_entry_counts({:{}, _, [truthy, falsy, condition]}, counts) do
-    choice_counts(truthy, falsy, condition, counts)
+    class_entry_counts({truthy, falsy, condition}, counts)
   end
 
   defp class_entry_counts({truthy, falsy, condition}, counts) do
-    choice_counts(truthy, falsy, condition, counts)
+    cond do
+      not (ClassNames.literal?(truthy) and ClassNames.literal?(falsy)) -> counts
+      condition == true -> class_group_counts(truthy, counts)
+      condition in [false, nil] -> class_group_counts(falsy, counts)
+      match?({_, _, _}, condition) -> class_group_counts(falsy, class_group_counts(truthy, counts))
+      true -> counts
+    end
   end
 
   defp class_entry_counts({classes, condition}, counts) do
-    conditional_counts(classes, condition, counts)
+    if condition == true or match?({_, _, _}, condition),
+      do: literal_counts(classes, counts),
+      else: counts
   end
 
-  defp class_entry_counts(classes, counts) do
-    if literal_group?(classes), do: class_group_counts(classes, counts), else: counts
-  end
+  defp class_entry_counts(classes, counts), do: literal_counts(classes, counts)
 
   defp class_group_counts(classes, counts) when is_binary(classes) do
-    class_group_counts(classes, 0, 0, byte_size(classes), counts)
+    classes
+    |> ClassNames.split()
+    |> elem(0)
+    |> Enum.reduce(counts, &Map.update(&2, &1, 1, fn count -> count + 1 end))
   end
 
   defp class_group_counts([class | classes], counts) do
@@ -137,35 +132,6 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
   end
 
   defp class_group_counts(_, counts), do: counts
-
-  defp class_group_counts(classes, index, start, size, counts) when index < size do
-    if class_whitespace?(:binary.at(classes, index)) do
-      counts =
-        if index == start,
-          do: counts,
-          else: add_class_count(binary_part(classes, start, index - start), counts)
-
-      next = skip_class_whitespace(classes, index + 1, size)
-      class_group_counts(classes, next, next, size, counts)
-    else
-      class_group_counts(classes, index + 1, start, size, counts)
-    end
-  end
-
-  defp class_group_counts(_, size, size, size, counts), do: counts
-
-  defp class_group_counts(classes, size, start, size, counts) do
-    add_class_count(binary_part(classes, start, size - start), counts)
-  end
-
-  defp class_whitespace?(byte), do: byte in [?\s, ?\t, ?\n, ?\r, ?\f]
-
-  defp conditional_counts(classes, true, counts) do
-    if literal_group?(classes), do: class_group_counts(classes, counts), else: counts
-  end
-
-  defp conditional_counts(classes, {_, _, _}, counts), do: conditional_counts(classes, true, counts)
-  defp conditional_counts(_, _, counts), do: counts
 
   defp current_mappings do
     key = persistent_key(mapping_path())
@@ -176,8 +142,8 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     end
   end
 
-  defp decode_mapping_cache(mappings) when is_map(mappings) do
-    if valid_mappings?(mappings), do: {:ok, mappings}, else: :error
+  defp decode_mapping_cache({fingerprint, mappings}) when is_map(mappings) do
+    if fingerprint == mapping_fingerprint() and valid_mappings?(mappings), do: {:ok, mappings}, else: :error
   end
 
   defp decode_mapping_cache(_), do: :error
@@ -187,7 +153,7 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
 
   defp file_counts(path, cached_files) do
     content = File.read!(path)
-    signature = file_signature(content)
+    signature = Digest.binary(content)
 
     case cached_files do
       %{^path => {^signature, counts}} when is_map(counts) ->
@@ -199,12 +165,9 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     end
   end
 
-  defp file_signature(content), do: Digest.binary(content)
-
-  defp literal_group?(value) when value in [false, nil], do: true
-  defp literal_group?(value) when is_binary(value), do: true
-  defp literal_group?(values) when is_list(values), do: Enum.all?(values, &literal_group?/1)
-  defp literal_group?(_), do: false
+  defp literal_counts(classes, counts) do
+    if ClassNames.literal?(classes), do: class_group_counts(classes, counts), else: counts
+  end
 
   defp load_mapping_cache(key) do
     mappings = Cache.read_term(mapping_path(), %{}, &decode_mapping_cache/1)
@@ -212,20 +175,9 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     mappings
   end
 
-  defp mix_project_config do
-    if Code.ensure_loaded?(Mix.Project) do
-      case Mix.Project.config() do
-        [] -> nil
-        config -> config
-      end
-    end
-  rescue
-    _ -> nil
-  catch
-    :exit, _ -> nil
-  end
+  defp mapping_fingerprint, do: Digest.term({__MODULE__.module_info(:md5), ClassNames.module_info(:md5)})
 
-  defp persistent_key(path), do: {__MODULE__, path}
+  defp persistent_key(path), do: {__MODULE__, path, mapping_fingerprint()}
 
   defp prepare_locked(path, mode) do
     scan_path = Path.join(Path.dirname(path), @scan_file)
@@ -238,7 +190,7 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     mappings_changed? = old_mappings != mappings or not File.regular?(path)
 
     if scan_changed?, do: Cache.write_term!(scan_path, files)
-    if mappings_changed?, do: Cache.write_term!(path, mappings)
+    if mappings_changed?, do: Cache.write_term!(path, {mapping_fingerprint(), mappings})
 
     key = persistent_key(path)
 
@@ -258,11 +210,7 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     end
   end
 
-  defp project_app do
-    app = if config = mix_project_config(), do: config[:app]
-
-    to_string(app || Config.otp_app())
-  end
+  defp project_app, do: to_string(Config.mix_project(& &1[:app]) || Config.otp_app())
 
   defp scan_ast({form, _, _}, counts) when form in [:def, :defp, :defmacro, :defmacrop, :defguard, :defguardp] do
     counts
@@ -296,52 +244,13 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
     end)
   end
 
-  defp skip_class_whitespace(classes, index, size) when index < size do
-    if class_whitespace?(:binary.at(classes, index)),
-      do: skip_class_whitespace(classes, index + 1, size),
-      else: index
-  end
-
-  defp skip_class_whitespace(_, index, _), do: index
-
   defp source_files do
-    paths =
-      if config = mix_project_config(),
-        do: config[:elixirc_paths] || ["lib"],
-        else: ["lib"]
-
-    paths
+    (Config.mix_project(& &1[:elixirc_paths]) || ["lib"])
     |> Enum.flat_map(&Files.regular_files/1)
     |> Enum.filter(&(Path.extname(&1) == ".ex"))
     |> Enum.uniq()
     |> Enum.sort()
   end
-
-  defp split_variant(class_name) do
-    case :binary.match(class_name, ":") do
-      {index, 1} when index + 1 < byte_size(class_name) ->
-        {
-          binary_part(class_name, 0, index),
-          binary_part(class_name, index + 1, byte_size(class_name) - index - 1)
-        }
-
-      _ ->
-        :error
-    end
-  end
-
-  defp valid_choice_counts(truthy, _, true, counts), do: class_group_counts(truthy, counts)
-
-  defp valid_choice_counts(_, falsy, condition, counts) when condition in [false, nil] do
-    class_group_counts(falsy, counts)
-  end
-
-  defp valid_choice_counts(truthy, falsy, {_, _, _}, counts) do
-    counts = class_group_counts(truthy, counts)
-    class_group_counts(falsy, counts)
-  end
-
-  defp valid_choice_counts(_, _, _, counts), do: counts
 
   defp valid_mappings?(mappings) do
     Enum.all?(mappings, fn {class_name, short_name} ->

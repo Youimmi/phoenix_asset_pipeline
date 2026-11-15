@@ -1,9 +1,15 @@
 defmodule PhoenixAssetPipeline.ClassNames do
   @moduledoc false
 
+  @whitespace [" ", "\t", "\n", "\r", "\f"]
+
   def allocate(base, class_name, {_, _, next_suffixes} = allocation) do
     allocate(base, class_name, allocation, Map.get(next_suffixes, base, 0))
   end
+
+  def literal?(value) when value in [false, nil] or is_binary(value), do: true
+  def literal?(values) when is_list(values), do: Enum.all?(values, &literal?/1)
+  def literal?(_), do: false
 
   def new(mappings), do: {mappings, reverse!(mappings), %{}}
 
@@ -19,6 +25,19 @@ defmodule PhoenixAssetPipeline.ClassNames do
           Map.put(short_names, short_name, class_name)
       end
     end)
+  end
+
+  # Returns the class tokens and whether the string holds anything but single separators.
+  def split(classes) do
+    class_list = :binary.split(classes, @whitespace, [:global, :trim_all])
+    {class_list, byte_size(classes) != :erlang.iolist_size(class_list) + length(class_list) - 1}
+  end
+
+  def variant(class_name) do
+    case :binary.split(class_name, ":") do
+      [variant, utility] when utility != "" -> {variant, utility}
+      _ -> :error
+    end
   end
 
   defp allocate(base, class_name, {classes, short_names, next_suffixes} = allocation, count) do

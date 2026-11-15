@@ -7,9 +7,7 @@ defmodule PhoenixAssetPipeline.LiveView do
 
   alias PhoenixAssetPipeline.Manifest
 
-  @default_digest_param "_digest"
   @default_fallback_path "/"
-  @default_uri_param "_uri"
 
   @doc """
   Redirects connected LiveView clients when their asset digest is stale.
@@ -24,46 +22,34 @@ defmodule PhoenixAssetPipeline.LiveView do
   configured `:fallback_path`.
   """
   def on_mount(opts, _, _, socket) do
-    opts = opts(opts)
-    digest_param = opts.digest_param
-    fallback_path = opts.fallback_path
-    uri_param = opts.uri_param
+    opts = List.wrap(opts)
+    digest_param = Keyword.get(opts, :digest_param, "_digest")
+    uri_param = Keyword.get(opts, :uri_param, "_uri")
     digest = Manifest.get(:digest)
 
     case get_connect_params(socket) do
       nil -> {:cont, socket}
       %{^digest_param => ^digest} -> {:cont, socket}
-      %{^uri_param => uri} -> {:halt, redirect(socket, to: safe_redirect_path(uri, fallback_path))}
-      _ -> {:halt, redirect(socket, to: fallback_path)}
+      params -> {:halt, redirect(socket, to: safe_path(params[uri_param], fallback_path(opts)))}
     end
   end
 
-  defp opts(opts) do
-    opts = List.wrap(opts)
-
-    %{
-      digest_param: Keyword.get(opts, :digest_param, @default_digest_param),
-      fallback_path: safe_fallback_path(Keyword.get(opts, :fallback_path, @default_fallback_path)),
-      uri_param: Keyword.get(opts, :uri_param, @default_uri_param)
-    }
+  defp fallback_path(opts) do
+    opts
+    |> Keyword.get(:fallback_path)
+    |> safe_path(@default_fallback_path)
   end
 
-  defp safe_fallback_path(path) when is_binary(path) do
-    if safe_path?(path), do: path, else: @default_fallback_path
+  # Mirrors the paths `Phoenix.LiveView.redirect/2` accepts, so an unsafe one falls back instead of raising.
+  defp safe_path("/" <> rest = path, fallback) do
+    if not match?("/" <> _, rest) and safe_path_bytes?(rest) and not String.contains?(path, "/%09"),
+      do: path,
+      else: fallback
   end
 
-  defp safe_fallback_path(_), do: @default_fallback_path
-
-  defp safe_path?("/" <> _ = path), do: not String.starts_with?(path, "//") and safe_path_bytes?(path)
-  defp safe_path?(_), do: false
+  defp safe_path(_, fallback), do: fallback
 
   defp safe_path_bytes?(<<byte, _::binary>>) when byte <= 0x20 or byte in [?\\, 0x7F], do: false
   defp safe_path_bytes?(<<_, rest::binary>>), do: safe_path_bytes?(rest)
   defp safe_path_bytes?(<<>>), do: true
-
-  defp safe_redirect_path(path, fallback_path) when is_binary(path) do
-    if safe_path?(path), do: path, else: fallback_path
-  end
-
-  defp safe_redirect_path(_, fallback_path), do: fallback_path
 end

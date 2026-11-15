@@ -7,6 +7,8 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
       use PhoenixAssetPipeline.HTML.Macros
   """
 
+  alias PhoenixAssetPipeline.ClassNames
+  alias PhoenixAssetPipeline.Digest
   alias PhoenixAssetPipeline.HTML.ClassAttrs
   alias PhoenixAssetPipeline.HTML.ModuleClasses
 
@@ -25,9 +27,9 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
     fixed_class_mappings = fixed_class_mappings!(env.module)
 
     quote do
-      def class_names, do: @class_names
       def __class_descriptors__, do: unquote(Macro.escape(descriptors))
       def __fixed_class_mappings__, do: unquote(Macro.escape(fixed_class_mappings))
+      def class_names, do: @class_names
     end
   end
 
@@ -36,12 +38,13 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
     classes = if is_list(classes), do: classes, else: [classes]
 
     cond do
-      literal_class_list?(classes) ->
+      Enum.all?(classes, &literal_class?/1) ->
         class_ast(classes, nil, env, false)
 
-      mixed_literal_and_class_helper_list?(classes) ->
+      # Only a fully literal value is rewritten, so a literal next to or inside a dynamic one would stay unobfuscated.
+      embedded_literal?(classes) ->
         raise ArgumentError,
-              "mixed literal class strings and class helper calls are not supported in class attributes. " <>
+              "literal class strings mixed with dynamic values are not supported in class attributes. " <>
                 "Wrap literal strings with class(...), or move them into a helper that returns class(...)."
 
       true ->
@@ -184,7 +187,7 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   defp class_group(value) when value in [false, nil], do: {:ok, [], false}
 
   defp class_group(<<classes::binary>>) do
-    {class_list, extra_whitespace?} = class_list(classes)
+    {class_list, extra_whitespace?} = ClassNames.split(classes)
     {:ok, class_list, extra_whitespace?}
   end
 
@@ -193,7 +196,7 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
     |> Enum.reduce_while({[], false}, fn class, {acc, extra_whitespace?} ->
       case class_group(class) do
         {:ok, class_list, extra?} ->
-          {:cont, {prepend_all(class_list, acc), extra_whitespace? or extra?}}
+          {:cont, {:lists.reverse(class_list, acc), extra_whitespace? or extra?}}
 
         :error ->
           {:halt, :error}
@@ -206,60 +209,6 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   end
 
   defp class_group(_), do: :error
-
-  defp class_helper_call?({:class, _, _}), do: true
-
-  defp class_helper_call?({name, _, args}) when is_atom(name) and is_list(args) do
-    name
-    |> to_string()
-    |> String.ends_with?("_class")
-  end
-
-  defp class_helper_call?({{:., _, [_, name]}, _, args}) when is_atom(name) and is_list(args) do
-    name
-    |> to_string()
-    |> String.ends_with?("_class")
-  end
-
-  defp class_helper_call?(_), do: false
-
-  defp class_list(<<>>), do: {[], true}
-
-  defp class_list(classes) do
-    class_list(classes, 0, 0, byte_size(classes), [], false)
-  end
-
-  defp class_list(classes, index, start, size, acc, extra_whitespace?) when index < size do
-    if class_whitespace?(:binary.at(classes, index)) do
-      next = skip_class_whitespace(classes, index + 1, size)
-
-      acc =
-        if index == start,
-          do: acc,
-          else: [binary_part(classes, start, index - start) | acc]
-
-      extra_whitespace? =
-        extra_whitespace? or index == start or next > index + 1 or next == size
-
-      class_list(classes, next, next, size, acc, extra_whitespace?)
-    else
-      class_list(classes, index + 1, start, size, acc, extra_whitespace?)
-    end
-  end
-
-  defp class_list(classes, size, start, size, acc, extra_whitespace?) do
-    class_list_done(classes, start, size, acc, extra_whitespace?)
-  end
-
-  defp class_list_done(_, size, size, acc, extra_whitespace?) do
-    {:lists.reverse(acc), extra_whitespace?}
-  end
-
-  defp class_list_done(classes, start, size, acc, extra_whitespace?) do
-    {:lists.reverse([binary_part(classes, start, size - start) | acc]), extra_whitespace?}
-  end
-
-  defp class_whitespace?(byte), do: byte in [?\s, ?\t, ?\n, ?\r, ?\f]
 
   defp condition_mask_ast(conditions), do: condition_mask_ast(conditions, 0, 0)
 
@@ -279,13 +228,38 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
 
   defp descriptor_hash(descriptor) do
     descriptor
-    |> :erlang.term_to_iovec([:deterministic])
-    |> then(&:crypto.hash(:sha256, &1))
+    |> Digest.term()
     |> Base.url_encode64(padding: false)
   end
 
   defp descriptor_kind(nil), do: :string
   defp descriptor_kind(_), do: :attr
+
+  # Follows only the positions an expression can return, so strings in conditions and arguments are ignored.
+  defp embedded_literal?(<<value::binary>>), do: String.trim(value) != ""
+  defp embedded_literal?(values) when is_list(values), do: Enum.any?(values, &embedded_literal?/1)
+  defp embedded_literal?({:{}, _, [truthy, falsy, _]}), do: embedded_literal?([truthy, falsy])
+  defp embedded_literal?({:->, _, [_, body]}), do: embedded_literal?(body)
+  defp embedded_literal?({:__block__, _, body}), do: body |> List.last() |> embedded_literal?()
+
+  defp embedded_literal?({operator, _, [_ | _] = args})
+       when operator in [:case, :cond, :for, :if, :receive, :try, :unless, :with] do
+    args
+    |> List.last()
+    |> List.wrap()
+    |> Enum.any?(fn
+      {:after, _} when operator == :try -> false
+      {_, value} -> embedded_literal?(value)
+      _ -> false
+    end)
+  end
+
+  defp embedded_literal?({operator, _, values}) when operator in [:&&, :and, :or, :||, :<>, :<<>>] do
+    embedded_literal?(values)
+  end
+
+  defp embedded_literal?({classes, _}), do: embedded_literal?(classes)
+  defp embedded_literal?(_), do: false
 
   defp fixed_class_mappings!(module) do
     {mappings, _} =
@@ -336,7 +310,7 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
         {seen, duplicates} = put_class_names(truthy_class_list, module, seen, duplicates)
 
         {
-          prepend_all(truthy_class_list, static_class_names),
+          :lists.reverse(truthy_class_list, static_class_names),
           dynamic_class_groups,
           conditions,
           seen,
@@ -348,7 +322,7 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
         {seen, duplicates} = put_class_names(falsy_class_list, module, seen, duplicates)
 
         {
-          prepend_all(falsy_class_list, static_class_names),
+          :lists.reverse(falsy_class_list, static_class_names),
           dynamic_class_groups,
           conditions,
           seen,
@@ -436,7 +410,7 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
 
         if condition == true do
           {
-            prepend_all(class_list, static_class_names),
+            :lists.reverse(class_list, static_class_names),
             dynamic_class_groups,
             conditions,
             seen,
@@ -466,35 +440,15 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   end
 
   defp literal_class?({:{}, _, [truthy_classes, falsy_classes, _]}) do
-    literal_class_group?(truthy_classes) and literal_class_group?(falsy_classes)
+    ClassNames.literal?(truthy_classes) and ClassNames.literal?(falsy_classes)
   end
 
   defp literal_class?({truthy_classes, falsy_classes, _}) do
-    literal_class_group?(truthy_classes) and literal_class_group?(falsy_classes)
+    ClassNames.literal?(truthy_classes) and ClassNames.literal?(falsy_classes)
   end
 
-  defp literal_class?({classes, _}), do: literal_class_group?(classes)
-  defp literal_class?(classes), do: literal_class_group?(classes)
-
-  defp literal_class_group?(value) when value in [false, nil], do: true
-  defp literal_class_group?(classes) when is_binary(classes), do: true
-
-  defp literal_class_group?(classes) when is_list(classes) do
-    Enum.all?(classes, &literal_class_group?/1)
-  end
-
-  defp literal_class_group?(_), do: false
-
-  defp literal_class_list?([class | rest]), do: literal_class?(class) and literal_class_list?(rest)
-
-  defp literal_class_list?([]), do: true
-
-  defp mixed_literal_and_class_helper_list?(classes) do
-    Enum.any?(classes, &literal_class?/1) and Enum.any?(classes, &class_helper_call?/1)
-  end
-
-  defp prepend_all([item | rest], acc), do: prepend_all(rest, [item | acc])
-  defp prepend_all([], acc), do: acc
+  defp literal_class?({classes, _}), do: ClassNames.literal?(classes)
+  defp literal_class?(classes), do: ClassNames.literal?(classes)
 
   defp put_class_descriptor(module, kind, descriptor) do
     key = {kind, descriptor_hash(descriptor)}
@@ -518,12 +472,12 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   defp put_class_names([], _, seen, duplicates), do: {seen, duplicates}
 
   defp put_dynamic_class_names([{:choice, truthy_class_names, falsy_class_names} | rest], class_names) do
-    class_names = prepend_all(falsy_class_names, prepend_all(truthy_class_names, class_names))
+    class_names = :lists.reverse(falsy_class_names, :lists.reverse(truthy_class_names, class_names))
     put_dynamic_class_names(rest, class_names)
   end
 
   defp put_dynamic_class_names([group | rest], class_names) do
-    put_dynamic_class_names(rest, prepend_all(group, class_names))
+    put_dynamic_class_names(rest, :lists.reverse(group, class_names))
   end
 
   defp put_dynamic_class_names([], class_names), do: class_names
@@ -570,14 +524,4 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
       )
     end
   end
-
-  defp skip_class_whitespace(classes, index, size) when index < size do
-    if class_whitespace?(:binary.at(classes, index)) do
-      skip_class_whitespace(classes, index + 1, size)
-    else
-      index
-    end
-  end
-
-  defp skip_class_whitespace(_, index, _), do: index
 end

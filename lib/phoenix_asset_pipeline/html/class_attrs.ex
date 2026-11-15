@@ -5,6 +5,7 @@ defmodule PhoenixAssetPipeline.HTML.ClassAttrs do
   alias Phoenix.LiveView.TagEngine.Parser
   alias PhoenixAssetPipeline.HTML.Entities
   alias PhoenixAssetPipeline.HTML.Minifier
+  alias PhoenixAssetPipeline.HTML.RawText
 
   @preserved_class_pattern ~r/(?:^|[\t\n\r\f :])!?whitespace-(?:pre(?:-line|-wrap)?|break-spaces)!?(?=[\t\n\r\f ]|$)/
   @preserved_style_pattern ~r/(?:^|;)\s*white-space(?:-collapse)?\s*:\s*(?:pre(?:-wrap|-line)?|break-spaces|preserve(?:-breaks|-spaces)?)(?=[\s;!]|$)/i
@@ -93,13 +94,32 @@ defmodule PhoenixAssetPipeline.HTML.ClassAttrs do
   end
 
   defp preserve_whitespace_attribute?({name, {:expr, value, _}, _}) when name in ["class", "style", "xml:space"] do
-    value
-    |> Code.string_to_quoted!()
-    |> Macro.prewalker()
-    |> Enum.any?(&(is_binary(&1) and preserve_whitespace_value?(name, &1)))
+    preserve_whitespace_expression?(name, Code.string_to_quoted!(value))
+  end
+
+  defp preserve_whitespace_attribute?({:root, {:expr, value, _}, _}) do
+    case Code.string_to_quoted!(value) do
+      {:%{}, _, entries} -> preserve_whitespace_entries?(entries)
+      entries -> preserve_whitespace_entries?(entries)
+    end
   end
 
   defp preserve_whitespace_attribute?(_), do: false
+
+  defp preserve_whitespace_entries?(entries) when is_list(entries) do
+    Enum.any?(entries, fn
+      {name, value} when is_atom(name) or is_binary(name) -> preserve_whitespace_expression?(to_string(name), value)
+      _ -> false
+    end)
+  end
+
+  defp preserve_whitespace_entries?(_), do: false
+
+  defp preserve_whitespace_expression?(name, ast) do
+    ast
+    |> Macro.prewalker()
+    |> Enum.any?(&(is_binary(&1) and preserve_whitespace_value?(name, &1)))
+  end
 
   defp preserve_whitespace_value?("class", value), do: Regex.match?(@preserved_class_pattern, value)
   defp preserve_whitespace_value?("style", value), do: Regex.match?(@preserved_style_pattern, value)
@@ -167,7 +187,7 @@ defmodule PhoenixAssetPipeline.HTML.ClassAttrs do
   defp rewrite_node({:block, type, name, attrs, children, meta, close_meta}, context, file) do
     child_context =
       if elem(context, 2) == true and
-           ((type == :tag and String.downcase(name) in ~w(pre script style textarea title)) or
+           ((type == :tag and RawText.tag?(String.downcase(name, :ascii))) or
               Enum.any?(attrs, &preserve_whitespace_attribute?/1)),
          do: put_elem(context, 2, :preserve),
          else: context

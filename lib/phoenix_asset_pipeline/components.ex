@@ -7,11 +7,11 @@ defmodule PhoenixAssetPipeline.Components do
 
   import Phoenix.Component, except: [embed_templates: 1, embed_templates: 2, sigil_H: 2]
 
-  @image_density_entries Enum.map(PhoenixAssetPipeline.Config.image_densities(), fn
-                           1 -> {"", 1}
-                           density -> {"-#{density}x", density}
-                         end)
-  @image_max_density List.last(PhoenixAssetPipeline.Config.image_densities())
+  alias PhoenixAssetPipeline.Assets.Images
+  alias PhoenixAssetPipeline.Config
+
+  @image_density_entries Enum.map(Config.image_densities(), &{Images.density_suffix(&1), &1})
+  @image_max_density List.last(Config.image_densities())
 
   attr :class, :any, default: nil
   attr :name, :string, required: true
@@ -38,7 +38,7 @@ defmodule PhoenixAssetPipeline.Components do
   attr :alt, :string, required: true
   attr :class, :any, default: nil
   attr :decoding, :string, default: "async"
-  attr :fetchpriority, :string, default: "high"
+  attr :fetchpriority, :string, default: "auto"
   attr :height, :string, required: true
   attr :img_class, :any, default: nil
   attr :loading, :string, default: nil

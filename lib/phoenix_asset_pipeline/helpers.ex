@@ -47,7 +47,11 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   @doc false
   def build_class_descriptors(template_records, classes) when is_list(template_records) and is_map(classes) do
-    Enum.reduce(template_records, %{}, &build_module_class_descriptors(&1, &2, classes))
+    template_records
+    |> Enum.flat_map(&elem(&1, 2))
+    |> Enum.reduce(%{}, fn {{kind, _} = key, descriptor}, descriptors ->
+      Map.put_new_lazy(descriptors, key, fn -> build_class_descriptor(kind, descriptor, classes) end)
+    end)
   end
 
   @doc false
@@ -60,36 +64,23 @@ defmodule PhoenixAssetPipeline.Helpers do
   @doc """
   Returns a safe `<img>` tag for a manifest-backed image path.
 
-  The helper rewrites `src` and list-based `srcset` entries to digested URLs.
+  The helper rewrites `src` and the `srcset` entries, given as a list or a
+  comma-separated string, to digested URLs.
   """
   def img(path, attrs \\ []) when is_list(attrs) do
-    {source_path, fragment} = asset_path(path)
-    %{path: path} = find!(:image_sources, file_path(source_path, Path.extname(source_path)))
-
-    attrs =
-      escape_attrs([src: src(path <> fragment), srcset: srcset(attrs[:srcset])] ++ Keyword.drop(attrs, [:src, :srcset]))
+    attrs = escape_attrs([src: image_src(path), srcset: srcset(attrs[:srcset])] ++ Keyword.drop(attrs, [:src, :srcset]))
 
     {:safe, [?<, "img", attrs, ?/, ?>]}
   end
 
   @doc false
-  def resolve_class({:string, hash} = descriptor_key, mask) when is_binary(hash) and is_integer(mask) do
-    case resolved_class_descriptor(descriptor_key) do
-      {:precomputed, strings} -> elem(strings, mask)
-      {:compact, entries} -> entries |> compact_class_list(mask) |> Enum.join(" ")
-    end
+  def resolve_class({:string, hash} = descriptor_key, mask) when is_binary(hash) do
+    resolve_literal_class(find!(:class_descriptors, descriptor_key), mask, nil)
   end
 
   @doc false
-  def resolve_class_attr({:attr, hash} = descriptor_key, mask, attr_key)
-      when is_binary(hash) and is_integer(mask) and is_atom(attr_key) do
-    class_list =
-      case resolved_class_descriptor(descriptor_key) do
-        {:precomputed, lists} -> elem(lists, mask)
-        {:compact, entries} -> compact_class_list(entries, mask)
-      end
-
-    class_attr(class_list, attr_key)
+  def resolve_class_attr({:attr, hash} = descriptor_key, mask, attr_key) when is_binary(hash) do
+    resolve_literal_class(find!(:class_descriptors, descriptor_key), mask, attr_key)
   end
 
   @doc false
@@ -121,16 +112,18 @@ defmodule PhoenixAssetPipeline.Helpers do
   Returns a safe `<script>` tag for a manifest-backed JavaScript asset.
   """
   def script(path, attrs \\ []) when is_list(attrs) do
-    extname = ".js"
-    %{integrity: integrity, path: path} = find!(:script_tags, file_path(path, extname))
+    %{integrity: integrity, path: path} = script_tag!(path)
 
     attrs =
-      [integrity: integrity, src: src(path)]
-      |> Kernel.++(Keyword.drop(attrs, [:integrity, :src]))
+      [type: "module", crossorigin: "anonymous", integrity: integrity, src: src(path, "")]
+      |> Kernel.++(Keyword.drop(attrs, [:type, :crossorigin, :integrity, :src]))
       |> escape_attrs()
 
     {:safe, [?<, "script", attrs, ?>, ?<, ?/, "script", ?>]}
   end
+
+  @doc false
+  def script_tag!(path), do: find!(:script_tags, file_path(path, ".js"))
 
   @doc """
   Returns a safe `<source>` tag with manifest-backed `srcset` entries.
@@ -159,10 +152,14 @@ defmodule PhoenixAssetPipeline.Helpers do
   """
   def svg_sprite_href(path) do
     {source_path, fragment} = asset_path(path)
-    extname = Path.extname(source_path)
-    %{path: path} = find!(:image_sources, file_path(source_path, extname))
+    path = find!(:image_sources, source_path).path
+    endpoint = Config.endpoint()
 
-    path <> fragment
+    # `<use>` cannot load cross-origin sprites, so the href takes the application's path prefix,
+    # not the static URL's. Only a running endpoint has a path prefix to apply.
+    if endpoint && Process.whereis(endpoint),
+      do: endpoint.path(path) <> fragment,
+      else: path <> fragment
   end
 
   defp asset_path(path) do
@@ -195,13 +192,7 @@ defmodule PhoenixAssetPipeline.Helpers do
     )
   end
 
-  defp build_module_class_descriptors({_, _, module_descriptors, _}, descriptors, classes) do
-    put_module_class_descriptors(module_descriptors, descriptors, classes)
-  end
-
-  defp cache_asset_urls(key, digest, endpoint) do
-    static_url = endpoint.static_url()
-
+  defp cache_asset_urls(key, {digest, static_url, static_path}, endpoint) do
     urls =
       :image_sources
       |> Manifest.get(%{})
@@ -212,7 +203,7 @@ defmodule PhoenixAssetPipeline.Helpers do
       |> Manifest.get(%{})
       |> put_asset_urls(urls, endpoint, static_url)
 
-    :persistent_term.put(key, {digest, urls})
+    :persistent_term.put(key, {digest, static_url, static_path, urls})
     urls
   end
 
@@ -274,11 +265,11 @@ defmodule PhoenixAssetPipeline.Helpers do
       case class_group do
         {:choice, truthy_class_group, falsy_class_group} ->
           if Bitwise.band(mask, bit) == 0,
-            do: prepend_all(falsy_class_group, acc),
-            else: prepend_all(truthy_class_group, acc)
+            do: :lists.reverse(falsy_class_group, acc),
+            else: :lists.reverse(truthy_class_group, acc)
 
         class_group ->
-          if Bitwise.band(mask, bit) == 0, do: acc, else: prepend_all(class_group, acc)
+          if Bitwise.band(mask, bit) == 0, do: acc, else: :lists.reverse(class_group, acc)
       end
 
     dynamic_classes_for_mask(rest, mask, Bitwise.bsl(bit, 1), acc)
@@ -286,17 +277,19 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   defp dynamic_classes_for_mask([], _, _, acc), do: acc
 
-  defp file_path(path, ""), do: path
-
   defp file_path(path, extname) do
-    if match?("", Path.extname(path)),
-      do: path <> extname,
-      else: path
+    if String.ends_with?(path, extname), do: path, else: path <> extname
   end
 
   defp find!(section, key) do
     Manifest.find(section, key) ||
       raise ArgumentError, "missing asset #{inspect(key)} in manifest section #{inspect(section)}"
+  end
+
+  defp image_src(path) do
+    {source_path, fragment} = asset_path(path)
+
+    src(find!(:image_sources, source_path).path, fragment)
   end
 
   defp local_static_url?("http://localhost" <> rest), do: local_static_url_suffix?(rest)
@@ -308,9 +301,6 @@ defmodule PhoenixAssetPipeline.Helpers do
   defp local_static_url_suffix?(":" <> _), do: true
   defp local_static_url_suffix?(_), do: false
 
-  defp prepend_all([item | rest], acc), do: prepend_all(rest, [item | acc])
-  defp prepend_all([], acc), do: acc
-
   defp prepend_class_conditions(entries, [class_name | class_names], condition) do
     prepend_class_conditions([{class_name, condition} | entries], class_names, condition)
   end
@@ -320,16 +310,6 @@ defmodule PhoenixAssetPipeline.Helpers do
   defp put_asset_urls(entries, urls, endpoint, static_url) do
     Enum.reduce(entries, urls, fn {_, %{path: path}}, urls ->
       Map.put(urls, path, asset_url(endpoint, static_url, path))
-    end)
-  end
-
-  defp put_module_class_descriptors(module_descriptors, descriptors, classes) do
-    Enum.reduce(module_descriptors, descriptors, fn {{kind, _} = key, descriptor}, descriptors
-                                                    when kind in [:string, :attr] ->
-      case descriptors do
-        %{^key => _} -> descriptors
-        _ -> Map.put(descriptors, key, build_class_descriptor(kind, descriptor, classes))
-      end
     end)
   end
 
@@ -362,53 +342,43 @@ defmodule PhoenixAssetPipeline.Helpers do
 
   defp resolve_dynamic_class_groups([], _, acc, count), do: {:lists.reverse(acc), count}
 
-  defp resolved_class_descriptor(descriptor_key), do: find!(:class_descriptors, descriptor_key)
-
-  defp split_fragment(path) do
-    case :binary.match(path, "#") do
-      {index, 1} ->
-        {binary_part(path, 0, index), binary_part(path, index, byte_size(path) - index)}
-
-      :nomatch ->
-        {path, ""}
-    end
-  end
-
-  defp src(path) do
+  defp src(path, fragment) do
     endpoint = Config.endpoint!()
+    static_url = endpoint.static_url()
+    # The path prefix can change with the endpoint configuration while the origin stays the same.
+    static_path = endpoint.static_path("/")
     digest = Manifest.get(:digest)
     key = {__MODULE__, :asset_urls, endpoint}
-    {source_path, fragment} = split_fragment(path)
 
     urls =
       case :persistent_term.get(key, @url_cache_missing) do
-        {^digest, urls} -> urls
-        _ -> cache_asset_urls(key, digest, endpoint)
+        {^digest, ^static_url, ^static_path, urls} -> urls
+        _ -> cache_asset_urls(key, {digest, static_url, static_path}, endpoint)
       end
 
-    Map.fetch!(urls, source_path) <> fragment
+    # Without a manifest snapshot the path can belong to a generation a rebuild has just replaced.
+    case urls do
+      %{^path => url} -> url <> fragment
+      _ -> asset_url(endpoint, static_url, path) <> fragment
+    end
   end
+
+  defp srcset(srcset) when is_binary(srcset), do: srcset |> String.split(",", trim: true) |> srcset()
 
   defp srcset([_ | _] = srcset) do
     srcset
     |> Enum.reduce([], fn part, acc ->
-      part = String.trim(part)
-      {url, descriptor} = srcset_part(part)
-      {source_path, fragment} = asset_path(url)
-      extname = Path.extname(source_path)
+      {url, descriptor} = part |> String.trim() |> srcset_part()
 
-      case find!(:image_sources, file_path(source_path, extname)) do
-        %{path: path} when acc == [] ->
-          [src(path <> fragment), descriptor]
-
-        %{path: path} ->
-          [acc, ?,, src(path <> fragment), descriptor]
+      case acc do
+        [] -> [image_src(url), descriptor]
+        _ -> [acc, ?,, image_src(url), descriptor]
       end
     end)
     |> IO.iodata_to_binary()
   end
 
-  defp srcset(_), do: nil
+  defp srcset(srcset) when srcset in [nil, []], do: nil
 
   defp srcset_part(part) do
     case :binary.match(part, [" ", "\t"]) do

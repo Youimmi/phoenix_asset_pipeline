@@ -6,20 +6,24 @@ defmodule PhoenixAssetPipeline.StaticAsset do
   alias PhoenixAssetPipeline.Native
 
   @minimum_compression_size 1_024
-  @encodings if Config.precompiled_manifest?(),
-               do: [
-                 {"br", {:brotli, 11}},
-                 {"deflate", {:zlib, 15, 9}},
-                 {"gzip", {:zlib, 31, 9}},
-                 {"zstd", {:zstd, 22}}
-               ],
-               else: []
+  @encoders [
+    {"br", {:brotli, 11}},
+    {"deflate", {:zlib, 15, 9}},
+    {"gzip", {:zlib, 31, 9}},
+    {"zstd", {:zstd, 22}}
+  ]
+  @encoding_names Enum.map(@encoders, &elem(&1, 0))
+  @encodings if Config.precompiled_manifest?(), do: @encoders, else: []
   @profile {
     if(Config.precompiled_manifest?(), do: :production, else: :development),
     @encodings,
     @minimum_compression_size,
     Config.already_compressed_extensions()
   }
+
+  def already_compressed?(path) do
+    is_map_key(Config.already_compressed_extensions(), path |> Path.extname() |> String.downcase())
+  end
 
   def build(path, content) do
     content = IO.iodata_to_binary(content)
@@ -44,18 +48,17 @@ defmodule PhoenixAssetPipeline.StaticAsset do
     end)
   end
 
-  def compressible?(path, content) when byte_size(content) >= @minimum_compression_size do
-    extension = path |> Path.extname() |> String.downcase()
-    not is_map_key(Config.already_compressed_extensions(), extension)
+  def compressible?(path, content) do
+    byte_size(content) >= @minimum_compression_size and not already_compressed?(path)
   end
-
-  def compressible?(_, _), do: false
 
   def data(data, etags) do
     Map.new(data, fn {encoding, {content, size}} ->
       {encoding, {content, size, Map.fetch!(etags, encoding)}}
     end)
   end
+
+  def encoding_names, do: @encoding_names
 
   def etags(data, digest) do
     Map.new(data, fn

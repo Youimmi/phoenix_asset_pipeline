@@ -3,7 +3,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   Static HTML and rendered HEEx minifier used by PhoenixAssetPipeline.
   """
 
-  @ascii_whitespace [?\s, ?\t, ?\n, ?\r, ?\f]
+  alias PhoenixAssetPipeline.HTML.RawText
 
   @boolean_attrs MapSet.new(~w(
     allowfullscreen async autofocus autoplay checked controls default defer disabled formnovalidate
@@ -11,7 +11,10 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     required reversed selected
   ))
 
-  @raw_text_tags MapSet.new(~w(pre script style textarea title))
+  # Elements that may appear before <body>; any other element or text starts the body implicitly.
+  @head_content_tags MapSet.new(~w(base basefont bgsound head html link meta noframes script style template title))
+  # Whitespace-only text is not rendered at the document level or directly inside these elements.
+  @unrendered_whitespace_containers MapSet.new(~w(colgroup datalist head html optgroup select table tbody tfoot thead tr))
   @trimmed_raw_text_tags MapSet.new(~w(script style title))
   @void_tags MapSet.new(~w(area base br col embed hr img input link meta param source track wbr))
 
@@ -22,19 +25,13 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   @doc false
   def minify_static_html(html) when is_binary(html) do
-    html
-    |> minify_html([])
-    |> IO.iodata_to_binary()
+    minified = minify_markup(html)
+    {html, _} = drop_unrendered_whitespace(minified, initial_containers(minified))
+    IO.iodata_to_binary(html)
   end
 
-  defp ascii_downcase(binary), do: ascii_downcase(binary, [])
-
-  defp ascii_downcase(<<byte, rest::binary>>, acc) when byte in ?A..?Z do
-    ascii_downcase(rest, [<<byte + 32>> | acc])
-  end
-
-  defp ascii_downcase(<<byte, rest::binary>>, acc), do: ascii_downcase(rest, [<<byte>> | acc])
-  defp ascii_downcase(<<>>, acc), do: acc |> :lists.reverse() |> IO.iodata_to_binary()
+  @doc false
+  def void_tag?(tag_name), do: MapSet.member?(@void_tags, tag_name)
 
   defp ascii_equal?(left, right) when byte_size(left) == byte_size(right), do: ascii_prefix?(left, right)
 
@@ -55,9 +52,12 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defguardp ascii_whitespace?(byte) when byte in [?\s, ?\t, ?\n, ?\r, ?\f]
 
-  defp ascii_whitespace_byte?(byte), do: byte in @ascii_whitespace
+  defp ascii_whitespace_only?(<<byte, rest::binary>>) when ascii_whitespace?(byte), do: ascii_whitespace_only?(rest)
+  defp ascii_whitespace_only?(<<>>), do: true
+  defp ascii_whitespace_only?(_), do: false
+
   defp attr_name_start_byte?(byte), do: byte in ?A..?Z or byte in ?a..?z or byte in [?_, ?:]
-  defp attr_name_stop_byte?(byte), do: ascii_whitespace_byte?(byte) or byte in [?=, ?/, ?>]
+  defp attr_name_stop_byte?(byte), do: ascii_whitespace?(byte) or byte in [?=, ?/, ?>]
 
   defp attr_quote_counts(value), do: attr_quote_counts(value, 0, 0)
 
@@ -103,7 +103,22 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp binary_list?([]), do: true
   defp binary_list?(_), do: false
 
-  defp boolean_attr?(name), do: MapSet.member?(@boolean_attrs, normalize_ascii_lower(name))
+  defp body_containers(containers, "body"), do: close_head(containers)
+
+  defp body_containers(containers, name) do
+    if MapSet.member?(@head_content_tags, name), do: containers, else: implied_body(containers)
+  end
+
+  defp boolean_attr?(name), do: MapSet.member?(@boolean_attrs, String.downcase(name, :ascii))
+
+  # Closing an element opened before the fragment leaves the container unknown.
+  defp close_container([name | containers], name), do: containers
+  defp close_container([:unknown] = containers, _), do: containers
+  defp close_container([], _), do: [:unknown]
+  defp close_container([_ | containers], name), do: close_container(containers, name)
+
+  defp close_head(["head" | containers]), do: containers
+  defp close_head(containers), do: containers
 
   defp collapse_ascii_whitespace(html) do
     if contains_ascii_whitespace?(html) do
@@ -130,7 +145,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   end
 
   defp collapse_ascii_whitespace(binary, index, size, start, pending_space?, acc) do
-    if ascii_whitespace_byte?(:binary.at(binary, index)) do
+    if ascii_whitespace?(:binary.at(binary, index)) do
       acc =
         if start < index,
           do: [binary_part(binary, start, index - start) | acc],
@@ -148,10 +163,6 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
       collapse_ascii_whitespace(binary, index + 1, size, start, false, acc)
     end
   end
-
-  defp contains_ascii_uppercase?(<<byte, _::binary>>) when byte in ?A..?Z, do: true
-  defp contains_ascii_uppercase?(<<_, rest::binary>>), do: contains_ascii_uppercase?(rest)
-  defp contains_ascii_uppercase?(<<>>), do: false
 
   defp contains_ascii_whitespace?(<<byte, _::binary>>) when ascii_whitespace?(byte), do: true
   defp contains_ascii_whitespace?(<<_, rest::binary>>), do: contains_ascii_whitespace?(rest)
@@ -199,18 +210,123 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp digit_value(byte, 16) when byte in ?A..?F, do: byte - ?A + 10
   defp digit_value(_, _), do: :error
 
-  defp doctype_html?(content), do: doctype_html?(content, "!doctype html")
-
-  defp doctype_html?(<<>>, <<>>), do: true
-
-  defp doctype_html?(<<byte, rest::binary>>, <<expected, expected_rest::binary>>) do
-    ascii_equal_byte?(byte, expected) and doctype_html?(rest, expected_rest)
+  # Containers carry over between fragments only across dynamic attribute values and raw text,
+  # which cannot change them.
+  defp drop_unrendered_fragment_whitespace([static | statics], [:text | contexts], containers, acc) do
+    {static, tail} = split_dynamic_whitespace(static, contexts)
+    {html, containers} = drop_unrendered_whitespace(static, containers)
+    acc = [IO.iodata_to_binary([html, tail]) | acc]
+    drop_unrendered_fragment_whitespace(statics, contexts, next_containers(containers, contexts), acc)
   end
 
-  defp doctype_html?(_, _), do: false
+  defp drop_unrendered_fragment_whitespace([static | statics], [{:raw, tag_name} | contexts], containers, acc) do
+    case RawText.close_index(static, tag_name) do
+      index when is_integer(index) ->
+        {rest, tail} = static |> binary_part(index, byte_size(static) - index) |> split_dynamic_whitespace(contexts)
+        {html, containers} = drop_unrendered_whitespace(rest, containers)
+        acc = [IO.iodata_to_binary([binary_part(static, 0, index), html, tail]) | acc]
+        drop_unrendered_fragment_whitespace(statics, contexts, next_containers(containers, contexts), acc)
 
-  defp escape_attr_quote(value, quote, replacement),
-    do: escape_attr_quote(value, quote, replacement, 0, 0, byte_size(value), [])
+      nil ->
+        drop_unrendered_fragment_whitespace(statics, contexts, containers, [static | acc])
+    end
+  end
+
+  # The fragment continues the open tag `name`, possibly inside a quoted attribute value.
+  defp drop_unrendered_fragment_whitespace([static | statics], [{name, quote} | contexts], containers, acc) do
+    case tag_rest(static, quote) do
+      {content, rest} ->
+        tag = binary_part(static, 0, byte_size(static) - byte_size(rest))
+        {rest, tail} = split_dynamic_whitespace(rest, contexts)
+        {html, containers} = enter_tag(name <> " " <> content, rest, containers, [tag])
+        acc = [IO.iodata_to_binary([html, tail]) | acc]
+        drop_unrendered_fragment_whitespace(statics, contexts, next_containers(containers, contexts), acc)
+
+      nil ->
+        drop_unrendered_fragment_whitespace(statics, contexts, containers, [static | acc])
+    end
+  end
+
+  defp drop_unrendered_fragment_whitespace([], [], _, acc), do: :lists.reverse(acc)
+
+  defp drop_unrendered_whitespace(html, containers), do: drop_unrendered_whitespace(html, containers, [])
+
+  defp drop_unrendered_whitespace(<<>>, containers, acc), do: {:lists.reverse(acc), containers}
+
+  defp drop_unrendered_whitespace(<<0, rest::binary>>, containers, acc) do
+    [text, rest] = :binary.split(rest, <<0>>)
+    drop_unrendered_whitespace(rest, containers, [[0, text, 0] | acc])
+  end
+
+  defp drop_unrendered_whitespace("<!--" <> rest = html, containers, acc) do
+    case :binary.match(rest, "-->") do
+      {index, 3} ->
+        size = index + 7
+        rest = binary_part(html, size, byte_size(html) - size)
+        drop_unrendered_whitespace(rest, containers, [binary_part(html, 0, size) | acc])
+
+      :nomatch ->
+        {:lists.reverse([html | acc]), containers}
+    end
+  end
+
+  defp drop_unrendered_whitespace("<" <> rest = html, containers, acc) do
+    case take_tag(rest) do
+      {:ok, content, rest} -> enter_tag(content, rest, containers, [binary_part(html, 0, byte_size(content) + 2) | acc])
+      :error -> {:lists.reverse([html | acc]), containers}
+    end
+  end
+
+  defp drop_unrendered_whitespace(html, containers, acc) do
+    {text, rest} = take_text(html)
+
+    if unrendered_whitespace?(text, containers) do
+      drop_unrendered_whitespace(rest, containers, acc)
+    else
+      containers = if ascii_whitespace_only?(text), do: containers, else: implied_body(containers)
+      drop_unrendered_whitespace(rest, containers, [text | acc])
+    end
+  end
+
+  defp enter_tag(<<?/, closing::binary>>, rest, containers, acc) do
+    {name, _} = closing |> trim_ascii() |> take_name()
+    drop_unrendered_whitespace(rest, close_container(containers, String.downcase(name, :ascii)), acc)
+  end
+
+  defp enter_tag(<<byte, _::binary>>, rest, containers, acc) when byte in [?!, ??] do
+    drop_unrendered_whitespace(rest, containers, acc)
+  end
+
+  defp enter_tag(content, rest, containers, acc) do
+    {content, self_closing?} = split_self_closing(content)
+    {name, _} = take_name(content)
+    name = String.downcase(name, :ascii)
+
+    containers = body_containers(containers, name)
+
+    cond do
+      self_closing? or void_tag?(name) ->
+        drop_unrendered_whitespace(rest, containers, acc)
+
+      RawText.tag?(name) ->
+        case RawText.close_index(rest, name) do
+          index when is_integer(index) ->
+            raw_text = binary_part(rest, 0, index)
+            rest = binary_part(rest, index, byte_size(rest) - index)
+            drop_unrendered_whitespace(rest, [name | containers], [raw_text | acc])
+
+          nil ->
+            {:lists.reverse([rest | acc]), [name | containers]}
+        end
+
+      true ->
+        drop_unrendered_whitespace(rest, [name | containers], acc)
+    end
+  end
+
+  defp escape_attr_quote(value, quote, replacement) do
+    escape_attr_quote(value, quote, replacement, 0, 0, byte_size(value), [])
+  end
 
   defp escape_attr_quote(value, _, _, size, start, size, acc) do
     acc
@@ -231,23 +347,8 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     end
   end
 
-  defp find_raw_text_close(<<"</", candidate::binary>> = current, tag_name, index) do
-    if raw_text_close_at?(candidate, tag_name) do
-      {:ok, index}
-    else
-      <<_, rest::binary>> = current
-      find_raw_text_close(rest, tag_name, index + 1)
-    end
-  end
-
-  defp find_raw_text_close(<<_, rest::binary>>, tag_name, index) do
-    find_raw_text_close(rest, tag_name, index + 1)
-  end
-
-  defp find_raw_text_close(<<>>, _, _), do: :error
-
   defp follows_dynamic_attr_name?(static) do
-    {name, rest} = take_attr_name(static)
+    {name, rest} = take_name(static)
     valid_attr_name?(name) and follows_dynamic_attr_tail?(rest)
   end
 
@@ -268,9 +369,13 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp format_attr({name, nil, _}), do: [" ", name]
 
+  # LiveView reads root element ids from rendered HTML only when the value is quoted.
   defp format_attr({"id", value, _}) do
     [" id=\"", escape_attr_quote(value, ?", "&quot;"), ?"]
   end
+
+  # An attribute without a value has the empty string as its value.
+  defp format_attr({name, "", _}), do: [" ", name]
 
   defp format_attr({name, value, _}) do
     if boolean_attr?(name) and ascii_equal?(value, name) do
@@ -297,12 +402,26 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp format_attrs(attrs, close) do
     attrs
-    |> Enum.sort_by(fn {name, _, index} -> {normalize_ascii_lower(name), index} end)
+    |> Enum.sort_by(fn {name, _, index} -> {String.downcase(name, :ascii), index} end)
     |> format_attrs([], close)
   end
 
   defp format_attrs([attr | rest], acc, close), do: format_attrs(rest, [format_attr(attr) | acc], close)
   defp format_attrs([], acc, close), do: {:lists.reverse(acc), opening_tag_close(close, acc)}
+
+  defp heex_after_tag(content, rest) do
+    case raw_text_open_tag(content) do
+      nil -> heex_context(rest, :text)
+      tag_name -> heex_context(rest, {:raw, tag_name})
+    end
+  end
+
+  defp heex_context(static, {:raw, tag_name} = context) do
+    case RawText.close_index(static, tag_name) do
+      index when is_integer(index) -> heex_context(binary_part(static, index, byte_size(static) - index), :text)
+      nil -> context
+    end
+  end
 
   defp heex_context(<<0, rest::binary>>, :text) do
     [_, rest] = :binary.split(rest, <<0>>)
@@ -319,8 +438,8 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp heex_context("<" <> rest, :text) do
     case take_tag(rest) do
-      {:ok, _, rest} ->
-        heex_context(rest, :text)
+      {:ok, content, rest} ->
+        heex_after_tag(content, rest)
 
       :error ->
         {name, _} = take_name(rest)
@@ -337,7 +456,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp heex_context(static, {name, nil}) do
     case take_tag(static) do
-      {:ok, _, rest} -> heex_context(rest, :text)
+      {:ok, content, rest} -> heex_after_tag(name <> " " <> content, rest)
       :error -> heex_quote_context(static, name, nil)
     end
   end
@@ -356,6 +475,14 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp heex_quote_context(<<quote, rest::binary>>, name, quote), do: heex_quote_context(rest, name, nil)
   defp heex_quote_context(<<_, rest::binary>>, name, quote), do: heex_quote_context(rest, name, quote)
   defp heex_quote_context("", name, quote), do: {name, quote}
+
+  # Body content closes an open <head> and opens <body>, even when neither tag is written.
+  defp implied_body([]), do: ["body"]
+  defp implied_body(["html" | _] = containers), do: ["body" | containers]
+  defp implied_body(["head" | containers]), do: implied_body(containers)
+  defp implied_body(containers), do: containers
+
+  defp initial_containers(html), do: if(ascii_prefix?(html, "<!doctype"), do: [], else: [:unknown])
 
   defp interleave_safe_iodata_parts([static | statics], [dynamic | dynamics]) do
     maybe_prepend_static(static, [dynamic | interleave_safe_iodata_parts(statics, dynamics)])
@@ -378,12 +505,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp maybe_prepend_static(static, acc), do: [static | acc]
 
   defp minify_bang_tag(content) do
-    tag =
-      if doctype_html?(content) do
-        "<!doctype html>"
-      else
-        ["<", content, ">"]
-      end
+    tag = if ascii_equal?(content, "!doctype html"), do: "<!doctype html>", else: ["<", content, ">"]
 
     {:ok, tag, :other, true}
   end
@@ -393,7 +515,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     {name, rest} = take_name(rest)
 
     if name != "" and trim_ascii(rest) == "" do
-      {:ok, ["</", name, ">"], {:close, normalize_ascii_lower(name)}, true}
+      {:ok, ["</", name, ">"], {:close, String.downcase(name, :ascii)}, true}
     else
       :error
     end
@@ -401,22 +523,35 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp minify_heex_fragments([static]), do: [minify_static_html(static)]
 
-  defp minify_heex_fragments([_, _ | _] = statics) do
-    statics
-    |> minify_heex_static_list([], :text)
+  defp minify_heex_fragments([first, _ | _] = statics) do
+    {minified, contexts} = minify_heex_static_list(statics, [], [], :text)
+
+    minified
     |> trim_dynamic_boundaries()
+    |> drop_unrendered_fragment_whitespace(contexts, initial_containers(first), [])
+  end
+
+  defp minify_heex_static(static, {:raw, tag_name}) do
+    case RawText.close_index(static, tag_name) do
+      index when is_integer(index) ->
+        rest = binary_part(static, index, byte_size(static) - index)
+        binary_part(static, 0, index) <> minify_heex_static(rest, :text)
+
+      nil ->
+        static
+    end
   end
 
   defp minify_heex_static(static, :text) do
     cond do
       :binary.match(static, <<0>>) != :nomatch ->
-        minify_static_html(static)
+        minify_markup(static)
 
       open_tag_fragment?(static) and balanced_quotes?(static) ->
         minify_open_tag_fragment(static)
 
       true ->
-        minify_static_html(static)
+        minify_markup(static)
     end
   end
 
@@ -425,7 +560,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
     minified =
       case take_tag(static) do
-        {:ok, _, _} -> minify_static_html(prefix <> static)
+        {:ok, _, _} -> minify_markup(prefix <> static)
         :error -> if balanced_quotes?(static), do: minify_open_tag_fragment(prefix <> static)
       end
 
@@ -446,12 +581,13 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     end
   end
 
-  defp minify_heex_static_list([static | rest], acc, context) do
+  # Returns the minified statics and the context each one starts in.
+  defp minify_heex_static_list([static | rest], acc, contexts, context) do
     minified = minify_heex_static(static, context)
-    minify_heex_static_list(rest, [minified | acc], heex_context(static, context))
+    minify_heex_static_list(rest, [minified | acc], [context | contexts], heex_context(static, context))
   end
 
-  defp minify_heex_static_list([], acc, _), do: :lists.reverse(acc)
+  defp minify_heex_static_list([], acc, contexts, _), do: {:lists.reverse(acc), :lists.reverse(contexts)}
 
   defp minify_heex_statics(statics) do
     statics
@@ -495,10 +631,12 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     end
   end
 
+  defp minify_markup(html), do: html |> minify_html([]) |> IO.iodata_to_binary()
+
   defp minify_open_tag_content(tag, tag_name, closed?, rest, acc) do
     acc = [tag | acc]
 
-    if raw_text_tag?(tag_name) and not closed? do
+    if RawText.tag?(tag_name) and not closed? do
       minify_raw_text(rest, tag_name, acc)
     else
       minify_html(rest, acc)
@@ -506,7 +644,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   end
 
   defp minify_open_tag_fragment(static) do
-    minified = minify_static_html(trim_ascii_trailing(static) <> ">")
+    minified = minify_markup(trim_ascii_trailing(static) <> ">")
     size = byte_size(minified)
 
     if size > 0 and :binary.at(minified, size - 1) == ?> do
@@ -523,7 +661,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     if name == "" do
       :error
     else
-      normalized_name = normalize_ascii_lower(name)
+      normalized_name = String.downcase(name, :ascii)
       void? = void_tag?(normalized_name)
       closed? = self_closing? or void?
       close = if self_closing? and not void?, do: "/>", else: ">"
@@ -546,8 +684,9 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
         minify_html(rest, [closing_tag, raw_text | acc])
 
+      # The element continues past this fragment, so its raw text is kept as written.
       :error ->
-        minify_html(rest, acc)
+        :lists.reverse([rest | acc])
     end
   end
 
@@ -628,9 +767,9 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp minify_trimmed_tag(content), do: minify_opening_tag(content)
 
-  defp normalize_ascii_lower(binary) do
-    if contains_ascii_uppercase?(binary), do: ascii_downcase(binary), else: binary
-  end
+  # Text-level dynamic parts may hold any markup, even unbalanced safe HTML.
+  defp next_containers(_, [:text | _]), do: [:unknown]
+  defp next_containers(containers, _), do: containers
 
   defp numeric_attr_quote_entity_at(<<?x, rest::binary>>, index), do: numeric_attr_quote_entity_at(rest, index + 1, 16, 0)
 
@@ -698,7 +837,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
         parse_attrs(rest, index, acc)
 
       _ ->
-        {name, rest} = take_attr_name(rest)
+        {name, rest} = take_name(rest)
 
         if name == "" do
           {_, rest} = take_byte(rest)
@@ -730,28 +869,19 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     end
   end
 
-  defp raw_text_close_at?(candidate, tag_name) do
-    size = byte_size(tag_name)
-
-    byte_size(candidate) > size and
-      ascii_prefix?(candidate, tag_name) and
-      raw_text_close_boundary?(candidate, size)
+  defp raw_text_open_tag(content) do
+    {content, self_closing?} = split_self_closing(content)
+    {name, _} = take_name(content)
+    name = String.downcase(name, :ascii)
+    if not self_closing? and RawText.tag?(name), do: name
   end
 
-  defp raw_text_close_boundary?(candidate, size) do
-    case :binary.at(candidate, size) do
-      byte when ascii_whitespace?(byte) or byte in [?>, ?/] -> true
-      _ -> false
-    end
-  end
-
-  defp raw_text_tag?(tag_name), do: MapSet.member?(@raw_text_tags, tag_name)
   defp self_closing_slash?(_, 1), do: true
 
   defp self_closing_slash?(content, size) do
     previous = :binary.at(content, size - 2)
 
-    ascii_whitespace_byte?(previous) or previous in [?", ?'] or
+    ascii_whitespace?(previous) or previous in [?", ?'] or
       self_closing_slash_token?(content, size - 2, false)
   end
 
@@ -762,7 +892,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
     cond do
       byte == ?= -> false
-      ascii_whitespace_byte?(byte) -> self_closing_slash_token?(content, index - 1, true)
+      ascii_whitespace?(byte) -> self_closing_slash_token?(content, index - 1, true)
       whitespace? -> true
       true -> self_closing_slash_token?(content, index - 1, false)
     end
@@ -775,7 +905,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp skip_ascii_whitespace(rest), do: rest
 
   defp skip_ascii_whitespace_index(binary, index, size) when index < size do
-    if ascii_whitespace_byte?(:binary.at(binary, index)) do
+    if ascii_whitespace?(:binary.at(binary, index)) do
       skip_ascii_whitespace_index(binary, index + 1, size)
     else
       index
@@ -784,11 +914,19 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp skip_ascii_whitespace_index(_, index, _), do: index
 
-  defp special_comment?(content), do: special_comment_content?(trim_ascii_leading(content))
+  defp special_comment?(content), do: special_comment_content?(skip_ascii_whitespace(content))
 
   defp special_comment_content?(<<"[if", _::binary>>), do: true
   defp special_comment_content?(<<"<![endif", _::binary>>), do: true
   defp special_comment_content?(_), do: false
+
+  # Whitespace before a text-level dynamic part may end up next to its text, so it is kept.
+  defp split_dynamic_whitespace(html, [:text | _]) do
+    trimmed = trim_ascii_trailing(html)
+    {trimmed, binary_part(html, byte_size(trimmed), byte_size(html) - byte_size(trimmed))}
+  end
+
+  defp split_dynamic_whitespace(html, _), do: {html, ""}
 
   defp split_safe_iodata_parts(parts) do
     split_safe_iodata_parts(parts, [], [], [])
@@ -826,7 +964,19 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp static_binary([binary]), do: binary
   defp static_binary(static), do: static |> :lists.reverse() |> IO.iodata_to_binary()
 
-  defp take_attr_name(rest), do: take_name(rest)
+  defp tag_rest(static, nil) do
+    case take_tag(static) do
+      {:ok, content, rest} -> {content, rest}
+      :error -> nil
+    end
+  end
+
+  defp tag_rest(static, quote) do
+    case :binary.split(static, <<quote>>) do
+      [_, after_quote] -> tag_rest(after_quote, nil)
+      [_] -> nil
+    end
+  end
 
   defp take_attr_value(rest) do
     rest = skip_ascii_whitespace(rest)
@@ -893,8 +1043,8 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   end
 
   defp take_raw_text(rest, tag_name) do
-    case find_raw_text_close(rest, tag_name, 0) do
-      {:ok, index} ->
+    case RawText.close_index(rest, tag_name) do
+      index when is_integer(index) ->
         raw_text = binary_part(rest, 0, index)
         closing = binary_part(rest, index, byte_size(rest) - index)
 
@@ -905,7 +1055,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
           :error -> :error
         end
 
-      :error ->
+      nil ->
         :error
     end
   end
@@ -948,7 +1098,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp take_unquoted_attr_value(binary, size, size), do: {binary, ""}
 
   defp take_unquoted_attr_value(binary, index, size) do
-    if ascii_whitespace_byte?(:binary.at(binary, index)) do
+    if ascii_whitespace?(:binary.at(binary, index)) do
       {binary_part(binary, 0, index), binary_part(binary, index, size - index)}
     else
       take_unquoted_attr_value(binary, index + 1, size)
@@ -970,15 +1120,8 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     trim_ascii_part(binary, start, stop, size)
   end
 
-  defp trim_ascii_leading(binary) do
-    size = byte_size(binary)
-    start = trim_ascii_leading_index(binary, 0, size)
-
-    if start == 0, do: binary, else: binary_part(binary, start, size - start)
-  end
-
   defp trim_ascii_leading_index(binary, index, size) when index < size do
-    if ascii_whitespace_byte?(:binary.at(binary, index)) do
+    if ascii_whitespace?(:binary.at(binary, index)) do
       trim_ascii_leading_index(binary, index + 1, size)
     else
       index
@@ -1001,7 +1144,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp trim_ascii_trailing_index(binary, start, size) when size > start do
     index = size - 1
 
-    if ascii_whitespace_byte?(:binary.at(binary, index)) do
+    if ascii_whitespace?(:binary.at(binary, index)) do
       trim_ascii_trailing_index(binary, start, index)
     else
       size
@@ -1034,11 +1177,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   end
 
   defp trim_raw_text(tag_name, raw_text) do
-    if MapSet.member?(@trimmed_raw_text_tags, tag_name) do
-      trim_ascii(raw_text)
-    else
-      raw_text
-    end
+    if MapSet.member?(@trimmed_raw_text_tags, tag_name), do: trim_ascii(raw_text), else: raw_text
   end
 
   defp trim_void_self_closing_boundary(left, <<?/, ?>, rest::binary>>) do
@@ -1057,6 +1196,12 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp unquoted_attr_value_chars?(<<_, rest::binary>>), do: unquoted_attr_value_chars?(rest)
   defp unquoted_attr_value_chars?(<<>>), do: true
 
+  defp unrendered_container?([]), do: true
+  defp unrendered_container?([name | _]) when is_binary(name), do: MapSet.member?(@unrendered_whitespace_containers, name)
+  defp unrendered_container?(_), do: false
+
+  defp unrendered_whitespace?(text, containers), do: unrendered_container?(containers) and ascii_whitespace_only?(text)
+
   defp valid_attr_name?(<<first, rest::binary>>) when first in ?A..?Z or first in ?a..?z or first in [?_, ?:] do
     valid_attr_name_tail?(rest)
   end
@@ -1074,9 +1219,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp void_open_tag_fragment?(static) do
     case open_tag_fragment_name(static) do
       nil -> false
-      tag_name -> void_tag?(normalize_ascii_lower(tag_name))
+      tag_name -> void_tag?(String.downcase(tag_name, :ascii))
     end
   end
-
-  defp void_tag?(tag_name), do: MapSet.member?(@void_tags, tag_name)
 end

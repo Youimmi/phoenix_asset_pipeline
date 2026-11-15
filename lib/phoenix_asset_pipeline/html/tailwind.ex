@@ -28,7 +28,7 @@ defmodule PhoenixAssetPipeline.HTML.Tailwind do
       current = stylesheet;
     }
 
-    console.log(JSON.stringify(candidates.flatMap(candidate => design.canonicalizeCandidates([candidate], {rem: 16}))));
+    console.log(JSON.stringify(candidates.flatMap(candidate => design.canonicalizeCandidates([candidate]))));
   }
   """
 
@@ -36,7 +36,7 @@ defmodule PhoenixAssetPipeline.HTML.Tailwind do
   def canonicalize([], _), do: []
 
   def canonicalize(classes, stylesheet) when is_binary(stylesheet) do
-    if !Process.whereis(__MODULE__) do
+    if is_nil(Process.whereis(__MODULE__)) do
       case GenServer.start(__MODULE__, [], name: __MODULE__) do
         {:ok, _} -> :ok
         {:error, {:already_started, _}} -> :ok
@@ -71,8 +71,6 @@ defmodule PhoenixAssetPipeline.HTML.Tailwind do
 
     {:ok, port}
   end
-
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   defp read_response(port, parts) do
     receive do

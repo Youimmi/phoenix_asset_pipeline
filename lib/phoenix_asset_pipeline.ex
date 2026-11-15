@@ -24,7 +24,21 @@ defmodule PhoenixAssetPipeline do
 
   @class_cache_file "classes.term"
   @encoded_asset_cache_file "encoded_assets.term"
+  @encodings StaticAsset.encoding_names()
+  @implementation [
+    __MODULE__,
+    Assets,
+    Assets.Bun,
+    Assets.Sprites,
+    ClassNames,
+    Config,
+    Native,
+    PhoenixAssetPipeline.Helpers,
+    StaticAsset
+  ]
+  @native_digest_cache_file "native_digests.term"
   @precompiled? Config.precompiled_manifest?()
+  @static_digest_cache_file "static_digests.term"
   @integrity_algorithm :sha512
   @integrity_prefix "sha512-"
 
@@ -37,52 +51,20 @@ defmodule PhoenixAssetPipeline do
   `PhoenixAssetPipeline.Manifest.save_precompiled!/1`.
   """
   def build(static_dir \\ static_dir()) do
-    static_dir
-    |> source_snapshot()
-    |> build_from_source_snapshot()
-  end
-
-  @doc false
-  def build_from_source_snapshot({files, static_signature}) do
-    modules = application_modules()
-    {template_records, template_signature} = template_snapshot(modules)
-
-    build_manifest(files, static_signature, template_records, template_signature)
-  end
-
-  @doc false
-  def build_if_stale(static_dir \\ static_dir()) do
-    modules = application_modules()
-    static_files = static_source_files(static_dir)
     assets = Assets.snapshot()
-    asset_signature_terms = Assets.signature_terms(assets)
-    static_signature = static_signature_from_terms(static_files, asset_signature_terms)
-    {template_records, template_signature} = template_snapshot(modules)
-    manifest_signature = signature(static_signature, template_signature)
-
-    if Manifest.get(:signature) == manifest_signature do
-      :current
-    else
-      {built_assets, built_asset_signature_terms} = build_consistent_assets(assets, asset_signature_terms)
-
-      static_signature =
-        if built_asset_signature_terms == asset_signature_terms,
-          do: static_signature,
-          else: static_signature_from_terms(static_files, built_asset_signature_terms)
-
-      files = unique_files(static_files, built_assets)
-
-      {:ok, build_manifest(files, static_signature, template_records, template_signature)}
-    end
+    build_assets_manifest(assets, Assets.signature_terms(assets), static_dir, template_snapshot())
   end
 
-  @doc """
-  Builds one static file from iodata, including the current encoding profile and ETags.
+  @doc false
+  def build_if_stale do
+    assets = Assets.snapshot()
+    asset_terms = Assets.signature_terms(assets)
+    static_dir = static_dir()
+    template = template_snapshot()
 
-  Does not read or write the on-disk manifest or asset caches.
-  """
-  def build_static_file(path, content) do
-    StaticAsset.build(path, content)
+    if current?(asset_terms, static_dir, elem(template, 1)),
+      do: :current,
+      else: {:ok, build_assets_manifest(assets, asset_terms, static_dir, template)}
   end
 
   @doc false
@@ -98,7 +80,9 @@ defmodule PhoenixAssetPipeline do
   Returns `true` when the stored manifest matches the current static and
   template signature.
   """
-  def current?, do: Manifest.get(:signature) == current_signature()
+  def current? do
+    current?(Assets.signature_terms(Assets.snapshot()), static_dir(), elem(template_snapshot(), 1))
+  end
 
   @doc """
   Returns the package priv directory.
@@ -119,7 +103,16 @@ defmodule PhoenixAssetPipeline do
     def run do
       :global.trans(
         {{__MODULE__, :run}, self()},
-        fn -> run_manifest(static_dir()) end,
+        fn ->
+          case build_if_stale() do
+            :current ->
+              :ok
+
+            {:ok, manifest} ->
+              :ok = Manifest.put(manifest)
+              Manifest.save_cached(manifest)
+          end
+        end,
         [node()],
         :infinity
       )
@@ -127,22 +120,13 @@ defmodule PhoenixAssetPipeline do
   end
 
   @doc false
-  def source_snapshot(static_dir \\ static_dir()) do
-    static_files = static_source_files(static_dir)
-    assets = Assets.snapshot()
-    asset_signature_terms = Assets.signature_terms(assets)
-    {built_assets, asset_signature_terms} = build_consistent_assets(assets, asset_signature_terms)
-
-    files = unique_files(static_files, built_assets)
-
-    {files, static_signature_from_terms(static_files, asset_signature_terms)}
-  end
-
-  @doc false
   def start_link(opts \\ []) do
-    children = maybe_add_watcher([Manifest], Keyword.get(opts, :watcher, Config.watcher?()))
+    children =
+      if Keyword.get(opts, :watcher, Config.watcher?()) == true,
+        do: [Manifest, {PhoenixAssetPipeline.Watcher, &run/0}],
+        else: [Manifest]
 
-    Supervisor.start_link(children, [strategy: :one_for_one] ++ supervisor_name(opts))
+    Supervisor.start_link(children, [strategy: :one_for_one] ++ Keyword.take(opts, [:name]))
   end
 
   @doc """
@@ -185,6 +169,16 @@ defmodule PhoenixAssetPipeline do
     |> Base.encode16(case: :lower)
   end
 
+  defp build_assets_manifest(assets, asset_terms, static_dir, {template_records, template_signature}) do
+    {built_assets, built_asset_terms} = build_consistent_assets(assets, asset_terms)
+    # Read static files after the slow asset build, so the manifest records their latest contents.
+    static_files = static_source_files(static_dir)
+
+    static_files
+    |> unique_files(built_assets)
+    |> build_manifest(static_signature(static_files, built_asset_terms), template_records, template_signature)
+  end
+
   defp build_classes(class_counts, fixed_classes) do
     allocation = ClassNames.new(fixed_classes)
 
@@ -195,20 +189,24 @@ defmodule PhoenixAssetPipeline do
     |> elem(0)
   end
 
-  defp build_consistent_assets(assets, signature_terms) do
+  defp build_consistent_assets(assets, signature_terms, attempts \\ 5)
+
+  defp build_consistent_assets(_, _, 0), do: raise("assets changed repeatedly during build")
+
+  defp build_consistent_assets(assets, signature_terms, attempts) do
     built_assets = Assets.build(assets)
     next_assets = Assets.snapshot()
     next_signature_terms = Assets.signature_terms(next_assets)
 
     if next_signature_terms == signature_terms,
       do: {built_assets, signature_terms},
-      else: build_consistent_assets(next_assets, next_signature_terms)
+      else: build_consistent_assets(next_assets, next_signature_terms, attempts - 1)
   end
 
   defp build_image_assets(entries, encoded_assets) do
     Enum.reduce(entries, {%{}, %{}}, fn {path, digest, content_type}, {images, sources} ->
       {data, _, _, _} = Map.fetch!(encoded_assets, digest)
-      digested_path = digested_path(digest, Path.extname(path))
+      digested_path = digest <> Path.extname(path)
 
       images = Map.put(images, digested_path, %{content_type: content_type, data: data, digest: digest})
       {images, Map.put(sources, path, %{digest: digest, path: "/" <> digested_path})}
@@ -228,46 +226,26 @@ defmodule PhoenixAssetPipeline do
           {images, scripts, styles, static_files, contents}
 
         {"assets/js/" <> path, content, digest}, {images, scripts, styles, static_files, contents} ->
-          scripts = [{path, digest} | scripts]
+          contents = put_asset_content(contents, path, content, digest, false, true)
+          {images, [{path, digest} | scripts], styles, static_files, contents}
 
-          contents =
-            put_asset_content(contents, digest, content, StaticAsset.compressible?(path, content), false, true)
-
-          {images, scripts, styles, static_files, contents}
-
-        {"assets/img/" <> path, content, digest}, {images, scripts, styles, static_files, contents} ->
-          images = [{path, digest, MIME.from_path(path)} | images]
-
-          contents =
-            put_asset_content(contents, digest, content, StaticAsset.compressible?(path, content), false, false)
-
-          {images, scripts, styles, static_files, contents}
-
-        {"assets/svg/" <> path, content, digest}, {images, scripts, styles, static_files, contents} ->
-          images = [{path, digest, MIME.from_path(path)} | images]
-
-          contents =
-            put_asset_content(contents, digest, content, StaticAsset.compressible?(path, content), false, false)
-
-          {images, scripts, styles, static_files, contents}
+        {<<"assets/", kind::binary-size(3), ?/, path::binary>>, content, digest},
+        {images, scripts, styles, static_files, contents}
+        when kind in ["img", "svg"] ->
+          contents = put_asset_content(contents, path, content, digest, false, false)
+          {[{path, digest, MIME.from_path(path)} | images], scripts, styles, static_files, contents}
 
         {path, content, digest}, {images, scripts, styles, static_files, contents} ->
-          static_files = [{path, digest, MIME.from_path(path)} | static_files]
-
-          contents =
-            put_asset_content(contents, digest, content, StaticAsset.compressible?(path, content), true, false)
-
-          {images, scripts, styles, static_files, contents}
+          contents = put_asset_content(contents, path, content, digest, true, false)
+          {images, scripts, styles, [{path, digest, MIME.from_path(path)} | static_files], contents}
       end)
 
     {class_counts, fixed_classes} = class_counts(styles, template_records)
 
     classes = cached_classes(class_counts, fixed_classes)
-
     class_descriptors = PhoenixAssetPipeline.Helpers.build_class_descriptors(template_records, classes)
-
-    encoding_profile = encoding_profile()
-    old_encoded_assets = read_encoded_asset_cache(encoding_profile)
+    encoding_profile = StaticAsset.profile()
+    old_encoded_assets = Cache.read_map(encoded_asset_cache_path(), encoding_profile)
     {encoded_assets, encoded_cache_changed?} = encoded_assets(contents, old_encoded_assets, elem(encoding_profile, 1))
     {images, image_sources} = build_image_assets(images, encoded_assets)
     {scripts, script_tags} = build_script_assets(scripts, encoded_assets)
@@ -295,7 +273,7 @@ defmodule PhoenixAssetPipeline do
   defp build_script_assets(entries, encoded_assets) do
     Enum.reduce(entries, {%{}, %{}}, fn {path, digest}, {scripts, tags} ->
       {data, _, integrity, _} = Map.fetch!(encoded_assets, digest)
-      digested_path = digested_path(digest, ".js")
+      digested_path = digest <> ".js"
 
       script = %{content_type: "text/javascript", data: data, digest: digest}
       tag = %{digest: digest, integrity: integrity, path: "/" <> digested_path}
@@ -335,21 +313,27 @@ defmodule PhoenixAssetPipeline do
       |> Map.to_list()
 
     Map.new(styles, fn {path, css, marker_classes, _, marker_prefix, _} ->
-      css = rewrite_css(css, marker_prefix, marker_classes, classes, variable_replacements)
+      # `</style` would end the inline element; to CSS `<\/` is the same text.
+      css =
+        css
+        |> rewrite_css(marker_prefix, marker_classes, classes, variable_replacements)
+        |> :binary.replace("</", "<\\/", [:global])
+
       {path, %{content: css, digest: Digest.hex(css), integrity: integrity(css)}}
     end)
   end
 
   defp cached_classes(class_counts, fixed_classes) do
-    signature = class_signature(class_counts, fixed_classes)
+    path = Path.join(Config.manifest_cache_dir(), @class_cache_file)
+    signature = Digest.term({__MODULE__.module_info(:md5), ClassNames.module_info(:md5), class_counts, fixed_classes})
 
-    case read_class_cache() do
+    case Cache.read_term(path, :error, &{:ok, &1}) do
       {^signature, classes} when is_map(classes) ->
         classes
 
       _ ->
         classes = build_classes(class_counts, fixed_classes)
-        save_class_cache(signature, classes)
+        Cache.write_term!(path, {signature, classes})
         classes
     end
   end
@@ -365,10 +349,6 @@ defmodule PhoenixAssetPipeline do
   end
 
   defp class(class_name), do: "." <> css_escape(class_name)
-
-  defp class_cache_path do
-    Path.join(Config.manifest_cache_dir(), @class_cache_file)
-  end
 
   defp class_counts(styles, template_records) do
     counts =
@@ -389,10 +369,6 @@ defmodule PhoenixAssetPipeline do
       )
 
     {Enum.sort_by(counts, &{-elem(&1, 1), elem(&1, 0)}), fixed_classes}
-  end
-
-  defp class_signature(class_counts, fixed_classes) do
-    Digest.term({class_counts, fixed_classes})
   end
 
   defp compress_encoded_assets(assets, [], _, changed?), do: {assets, changed?}
@@ -428,8 +404,15 @@ defmodule PhoenixAssetPipeline do
 
   defp count_css_classes([], [], counts), do: counts
 
-  defp count_css_variables([{variable, count} | variables], counts) do
-    count_css_variables(variables, Map.update(counts, variable, count, &(&1 + count)))
+  # A zero count reserves an opaque identifier across every stylesheet. A name no stylesheet
+  # declares can only be set outside CSS, so it keeps its spelling too.
+  defp count_css_variables([{variable, count, declared?} | variables], counts) do
+    count_css_variables(
+      variables,
+      Map.update(counts, variable, {count, declared?}, fn {total, declared_before?} ->
+        {if(total == 0 or count == 0, do: 0, else: total + count), declared? or declared_before?}
+      end)
+    )
   end
 
   defp count_css_variables([], counts), do: counts
@@ -451,13 +434,17 @@ defmodule PhoenixAssetPipeline do
   end
 
   defp css_variable_replacements(counts) do
+    public = Config.public_css_variables()
+    # Public names keep their spelling everywhere, so no internal property may be shortened to one.
+    reserved = Map.new(public, fn "--" <> name -> {name, name} end)
+
     {short_names, variables} =
-      Enum.reduce(counts, {%{}, []}, fn {<<"--", name::binary>> = variable, count}, {short_names, variables} ->
+      Enum.reduce(counts, {reserved, []}, fn {<<"--", name::binary>> = variable, {count, declared?}},
+                                             {short_names, variables} ->
         variables =
-          case variable do
-            "--tw-" <> _ -> [{variable, name, count} | variables]
-            _ -> variables
-          end
+          if count > 0 and declared? and not MapSet.member?(public, variable),
+            do: [{variable, name, count} | variables],
+            else: variables
 
         {Map.put(short_names, name, name), variables}
       end)
@@ -465,29 +452,16 @@ defmodule PhoenixAssetPipeline do
     variables
     |> Enum.sort_by(fn {variable, _, count} -> {-byte_size(variable) * count, variable} end)
     |> Enum.reduce({{%{}, short_names, %{}}, %{}}, fn {variable, name, _}, {allocation, replacements} ->
-      {short_name, allocation} = obfuscate_class(name, allocation)
-      replacement = "--" <> short_name
-
-      put_css_variable_replacement(allocation, replacements, variable, replacement)
+      {short_name, allocation} = ClassNames.allocate(ClassNames.prefix(name), name, allocation)
+      {allocation, Map.put(replacements, variable, "--" <> short_name)}
     end)
     |> elem(1)
   end
 
-  defp current_signature do
-    modules = application_modules()
-
-    signature(current_static_signature(), template_signature(modules))
+  defp current?(asset_terms, static_dir, template_signature) do
+    static_signature = static_signature(static_digests(static_dir), asset_terms)
+    Manifest.get(:signature) == signature(static_signature, template_signature)
   end
-
-  defp current_static_signature do
-    assets = Assets.snapshot()
-
-    static_dir()
-    |> static_source_files()
-    |> static_signature(assets)
-  end
-
-  defp digested_path(digest, extname), do: digest <> extname
 
   defp encoded_asset_cache_path do
     Path.join(Config.manifest_cache_dir(), @encoded_asset_cache_file)
@@ -510,7 +484,7 @@ defmodule PhoenixAssetPipeline do
   defp encoded_data_valid?(data) when is_map(data) do
     Enum.all?(data, fn
       {encoding, {content, stored_size}}
-      when encoding in ["br", "deflate", "gzip", "zstd"] and is_binary(content) and
+      when encoding in @encodings and is_binary(content) and
              is_integer(stored_size) ->
         stored_size == byte_size(content)
 
@@ -518,8 +492,6 @@ defmodule PhoenixAssetPipeline do
         false
     end)
   end
-
-  defp encoding_profile, do: StaticAsset.profile()
 
   defp etags_cover_data?(etags, data) when is_map(etags) do
     map_size(etags) >= map_size(data) and
@@ -532,7 +504,7 @@ defmodule PhoenixAssetPipeline do
 
   defp etags_valid?(etags) do
     Enum.all?(etags, fn {encoding, value} ->
-      encoding in ["raw", "br", "deflate", "gzip", "zstd"] and is_binary(value)
+      (encoding == "raw" or encoding in @encodings) and is_binary(value)
     end)
   end
 
@@ -574,6 +546,17 @@ defmodule PhoenixAssetPipeline do
     end
   end
 
+  # The manifest also depends on the code that builds it, including the native library.
+  defp implementation do
+    native =
+      priv_dir!()
+      |> Path.join("native")
+      |> Files.digests(@native_digest_cache_file)
+      |> Enum.map(&elem(&1, 1))
+
+    {Enum.map(@implementation, & &1.module_info(:md5)), native}
+  end
+
   defp integrity(content) do
     hash =
       @integrity_algorithm
@@ -583,10 +566,7 @@ defmodule PhoenixAssetPipeline do
     @integrity_prefix <> hash
   end
 
-  defp maybe_add_watcher(children, true), do: children ++ [{PhoenixAssetPipeline.Watcher, &run/0}]
-  defp maybe_add_watcher(children, _), do: children
-
-  defp obfuscate_class(class_name, {classes, _, _} = allocation, fixed_classes \\ nil) do
+  defp obfuscate_class(class_name, {classes, _, _} = allocation, fixed_classes) do
     case classes do
       %{^class_name => short_name} -> {short_name, allocation}
       _ -> obfuscate_unreserved_class(class_name, allocation, fixed_classes)
@@ -594,7 +574,7 @@ defmodule PhoenixAssetPipeline do
   end
 
   defp obfuscate_phx_utility(utility_class, allocation, fixed_classes) do
-    if fixed_classes != nil and Map.has_key?(fixed_classes, utility_class) do
+    if Map.has_key?(fixed_classes, utility_class) do
       short_name = ClassNames.prefix(utility_class)
       {short_name, allocation}
     else
@@ -618,7 +598,7 @@ defmodule PhoenixAssetPipeline do
          {classes, short_names, next_suffixes} = allocation,
          fixed_classes
        ) do
-    case phx_variant_parts(class_name) do
+    case ClassNames.variant(class_name) do
       {variant_class, utility_class} ->
         obfuscate_phx_variant_class(
           class_name,
@@ -630,9 +610,6 @@ defmodule PhoenixAssetPipeline do
 
       :error ->
         case short_names do
-          %{^class_name => ^class_name} ->
-            {class_name, allocation}
-
           %{^class_name => other} ->
             raise "class name #{inspect(class_name)} is reserved by #{inspect(other)}"
 
@@ -651,38 +628,14 @@ defmodule PhoenixAssetPipeline do
     for {^key, values} <- mod.__info__(:attributes), value <- values, do: value
   end
 
-  defp phx_variant_parts(class_name) do
-    case :binary.match(class_name, ":") do
-      {index, 1} when index + 1 < byte_size(class_name) ->
-        {
-          binary_part(class_name, 0, index),
-          binary_part(class_name, index + 1, byte_size(class_name) - index - 1)
-        }
+  defp put_asset_content(contents, path, content, digest, static?, integrity?) do
+    compress? = StaticAsset.compressible?(path, content)
 
-      _ ->
-        :error
-    end
+    Map.update(contents, digest, {content, compress?, static?, integrity?}, fn
+      {content, stored_compress?, stored_static?, stored_integrity?} ->
+        {content, stored_compress? or compress?, stored_static? or static?, stored_integrity? or integrity?}
+    end)
   end
-
-  defp put_asset_content(contents, digest, content, compress?, static?, integrity?) do
-    case Map.fetch(contents, digest) do
-      {:ok, {stored_content, stored_compress?, stored_static?, stored_integrity?}} ->
-        value =
-          {stored_content, stored_compress? or compress?, stored_static? or static?, stored_integrity? or integrity?}
-
-        Map.put(contents, digest, value)
-
-      :error ->
-        Map.put(contents, digest, {content, compress?, static?, integrity?})
-    end
-  end
-
-  defp put_css_variable_replacement(allocation, replacements, variable, replacement)
-       when byte_size(replacement) < byte_size(variable) do
-    {allocation, Map.put(replacements, variable, replacement)}
-  end
-
-  defp put_css_variable_replacement(allocation, replacements, _, _), do: {allocation, replacements}
 
   defp put_fixed_classes([{class_name, short_name} | mappings], fixed_classes) do
     fixed_classes =
@@ -702,20 +655,17 @@ defmodule PhoenixAssetPipeline do
 
   defp put_fixed_classes([], fixed_classes), do: fixed_classes
 
-  if !@precompiled? do
-    defp put_manifest(manifest) do
-      :ok = Manifest.put(manifest)
-      :ok = Manifest.save_cached(manifest)
-    end
-  end
-
   defp put_template_record(mod, records) do
-    case template_module(mod) do
-      {[], [], []} ->
-        records
+    if Code.ensure_loaded?(mod) do
+      class_names = exported_value(mod, :class_names)
+      descriptors = exported_value(mod, :__class_descriptors__)
+      fixed_class_mappings = fixed_class_mappings(mod)
 
-      {class_names, descriptors, fixed_class_mappings} ->
-        [{mod, Enum.sort(class_names), descriptors, fixed_class_mappings} | records]
+      if class_names == [] and descriptors == [] and fixed_class_mappings == [],
+        do: records,
+        else: [{mod, Enum.sort(class_names), descriptors, fixed_class_mappings} | records]
+    else
+      records
     end
   end
 
@@ -731,23 +681,6 @@ defmodule PhoenixAssetPipeline do
     Map.put(files, path, value)
   end
 
-  defp read_class_cache do
-    Cache.read_term(class_cache_path(), :error, fn
-      {signature, classes} when is_binary(signature) and is_map(classes) ->
-        {:ok, {signature, classes}}
-
-      _ ->
-        :error
-    end)
-  end
-
-  defp read_encoded_asset_cache(profile) do
-    Cache.read_term(encoded_asset_cache_path(), %{}, fn
-      {^profile, cache} when is_map(cache) -> {:ok, cache}
-      _ -> :error
-    end)
-  end
-
   defp rewrite_css(css, _, [], _, []), do: css
 
   defp rewrite_css(css, marker_prefix, marker_classes, classes, variable_replacements) do
@@ -757,19 +690,6 @@ defmodule PhoenixAssetPipeline do
       end)
 
     Native.finalize_css(css, marker_prefix, class_replacements, variable_replacements)
-  end
-
-  if !@precompiled? do
-    defp run_manifest(static_dir) do
-      case build_if_stale(static_dir) do
-        :current -> :ok
-        {:ok, manifest} -> put_manifest(manifest)
-      end
-    end
-  end
-
-  defp save_class_cache(signature, classes) do
-    Cache.write_term!(class_cache_path(), {signature, classes})
   end
 
   defp save_encoded_asset_cache(assets, old_assets, profile, changed?) do
@@ -822,24 +742,32 @@ defmodule PhoenixAssetPipeline do
     Digest.term({static_signature, template_signature})
   end
 
+  defp static_digests(static_dir) do
+    root = Path.expand(static_dir)
+
+    for {path, digest} <- Files.digests(root, @static_digest_cache_file, :static) do
+      {Files.relative_path(path, root), Base.encode16(digest, case: :lower)}
+    end
+  end
+
   defp static_file(path, static_dir) do
     content = File.read!(path)
     {Files.relative_path(path, static_dir), content, Digest.hex(content)}
   end
 
-  defp static_signature(files, assets) do
-    static_signature_from_terms(files, Assets.signature_terms(assets))
-  end
-
-  defp static_signature_from_terms(files, asset_terms) do
-    static_terms = Enum.map(files, fn {path, _, digest} -> {:static, path, digest} end)
+  defp static_signature(files, asset_terms) do
+    static_terms =
+      Enum.map(files, fn
+        {path, digest} -> {:static, path, digest}
+        {path, _, digest} -> {:static, path, digest}
+      end)
 
     generated =
       Map.new(Config.generated(), fn {path, {module, _, _} = generator} ->
         {path, {generator, module.module_info(:md5)}}
       end)
 
-    Digest.term({static_terms, asset_terms, encoding_profile(), generated})
+    Digest.term({static_terms, asset_terms, StaticAsset.profile(), generated, implementation()})
   end
 
   defp static_source_files(static_dir) do
@@ -850,48 +778,20 @@ defmodule PhoenixAssetPipeline do
     |> Enum.map(&static_file(&1, root))
   end
 
-  defp supervisor_name(opts) do
-    case Keyword.get(opts, :name) do
-      nil -> []
-      name -> [name: name]
-    end
-  end
+  defp template_snapshot do
+    records =
+      application_modules()
+      |> Enum.reduce([], &put_template_record/2)
+      |> Enum.sort_by(&elem(&1, 0))
 
-  defp template_module(mod) do
-    if Code.ensure_loaded?(mod) do
-      {
-        exported_value(mod, :class_names),
-        exported_value(mod, :__class_descriptors__),
-        fixed_class_mappings(mod)
-      }
-    else
-      {[], [], []}
-    end
-  end
+    signature =
+      records
+      |> Enum.map(fn {mod, class_names, descriptors, fixed_class_mappings} ->
+        {mod, class_names, Enum.map(descriptors, &elem(&1, 0)), fixed_class_mappings}
+      end)
+      |> Digest.term()
 
-  defp template_records(modules) do
-    modules
-    |> Enum.reduce([], &put_template_record/2)
-    |> Enum.sort_by(&elem(&1, 0))
-  end
-
-  defp template_records_signature(records) do
-    records
-    |> Enum.map(fn {mod, class_names, descriptors, fixed_class_mappings} ->
-      {mod, class_names, Enum.map(descriptors, &elem(&1, 0)), fixed_class_mappings}
-    end)
-    |> Digest.term()
-  end
-
-  defp template_signature(modules) do
-    modules
-    |> template_records()
-    |> template_records_signature()
-  end
-
-  defp template_snapshot(modules) do
-    records = template_records(modules)
-    {records, template_records_signature(records)}
+    {records, signature}
   end
 
   defp trim_comments("/*! tailwindcss" <> _ = css) do

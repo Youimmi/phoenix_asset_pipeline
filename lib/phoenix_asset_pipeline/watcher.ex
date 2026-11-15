@@ -23,9 +23,6 @@ defmodule PhoenixAssetPipeline.Watcher do
   end
 
   @impl true
-  def handle_cast(:rebuild, state), do: {:noreply, schedule_rebuild(state)}
-
-  @impl true
   def handle_info({:file_event, monitor, {path, _}}, %{monitor: monitor} = state) do
     state =
       if source_path?(path, state.sources),
@@ -74,11 +71,6 @@ defmodule PhoenixAssetPipeline.Watcher do
   end
 
   @doc false
-  def rebuild do
-    GenServer.cast(__MODULE__, :rebuild)
-  end
-
-  @doc false
   def start_link(run) when is_function(run, 0) do
     GenServer.start_link(__MODULE__, run, name: __MODULE__)
   end
@@ -109,11 +101,7 @@ defmodule PhoenixAssetPipeline.Watcher do
 
   defp finish_rebuild(state), do: %{state | rebuild: nil}
 
-  defp ignored_source_path?(path) do
-    path
-    |> Path.split()
-    |> Enum.any?(&(&1 == "node_modules"))
-  end
+  defp ignored_source_path?(path), do: "node_modules" in Path.split(path)
 
   defp refresh_sources(%{sources: {dirs, _, _}} = state, {dirs, _, _} = sources) do
     %{state | sources: sources}

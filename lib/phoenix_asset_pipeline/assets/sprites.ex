@@ -1,18 +1,17 @@
 defmodule PhoenixAssetPipeline.Assets.Sprites do
   @moduledoc false
 
-  alias Phoenix.LiveView.TagEngine.Parser
+  alias PhoenixAssetPipeline.Cache
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.Digest
   alias PhoenixAssetPipeline.Files
   alias PhoenixAssetPipeline.HTML.Entities
+  alias PhoenixAssetPipeline.HTML.TemplateScanner
 
+  @scan_cache_file "sprite_scan.term"
+  @source_digest_cache_file "sprite_source_digests.term"
   @sprite_group_type :svg_sprite_group
   @sprite_source_type :svg_sprite_source
-
-  def entries(source \\ snapshot())
-  def entries(assets_dir) when is_binary(assets_dir), do: assets_dir |> snapshot() |> entries()
-  def entries(entries) when is_list(entries), do: entries
 
   def signature(entries) do
     Enum.map(entries, fn
@@ -24,18 +23,11 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     end)
   end
 
-  def snapshot(assets_dir \\ Config.assets_dir()) do
-    snapshot(assets_dir, Config.svg_sprites())
-  end
-
-  @doc false
-  def snapshot(assets_dir, config) when is_list(config) do
+  def snapshot(assets_dir, config \\ Config.svg_sprites()) when is_list(config) do
     assets_dir
     |> Path.expand()
     |> configured_entries(config)
   end
-
-  def source_dirs(nil), do: []
 
   def source_dirs(entries) do
     entries
@@ -46,8 +38,6 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     end)
     |> Enum.uniq()
   end
-
-  def source_terms(nil), do: []
 
   def source_terms(entries) do
     Enum.map(entries, fn
@@ -95,94 +85,20 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     end)
   end
 
-  defp collect_ast({:@, _, [{kind, _, _}]}, ids) when kind in [:doc, :moduledoc, :typedoc], do: ids
-  defp collect_ast({:quote, _, _}, ids), do: ids
-
-  defp collect_ast({:sigil_H, _, [{:<<>>, _, [source]}, _]}, ids) when is_binary(source) do
-    collect_heex(source, ids)
-  end
-
-  defp collect_ast({:svg_sprite_href, _, [value]}, ids) when is_binary(value), do: collect_sprite_href(value, ids)
-
-  defp collect_ast({{:., _, [_, :svg_sprite_href]}, _, [value]}, ids) when is_binary(value) do
-    collect_sprite_href(value, ids)
-  end
-
-  defp collect_ast({kind, _, [{:icon_name, _, _}, [do: value]]}, ids) when kind in [:def, :defp] and is_binary(value),
-    do: put_icons_id(value, ids)
-
-  defp collect_ast({:icon, value}, ids) when is_binary(value), do: put_icons_id(value, ids)
-  defp collect_ast({_, _, args}, ids) when is_list(args), do: collect_ast(args, ids)
-  defp collect_ast({left, right}, ids), do: collect_ast(right, collect_ast(left, ids))
-  defp collect_ast([node | nodes], ids), do: collect_ast(nodes, collect_ast(node, ids))
-  defp collect_ast(_, ids), do: ids
-
-  defp collect_attribute({key, value, _}, {name, sprite, ids}) do
-    {value, ids} =
-      case value do
-        {:expr, expression, _} ->
-          ast = Code.string_to_quoted!(expression)
-          {ast, collect_ast(ast, ids)}
-
-        {:string, value, _} when key in ["name", "sprite", "icon"] ->
-          {Entities.decode_attribute(value), ids}
-
-        _ ->
-          {nil, ids}
-      end
-
-    case {key, value} do
-      {"name", value} when is_binary(value) -> {value, sprite, ids}
-      {"sprite", value} when is_binary(value) -> {name, value, ids}
-      {"icon", value} when is_binary(value) -> {name, sprite, put_icons_id(value, ids)}
-      _ -> {name, sprite, ids}
-    end
-  end
-
-  defp collect_heex(source, ids, file \\ "nofile") do
-    source
-    |> Parser.parse!(
-      file: file,
-      tag_handler: Phoenix.LiveView.HTMLEngine,
-      skip_macro_components: true,
-      strip_eex_comments: true,
-      prune_text_after_slots: false
-    )
-    |> Map.fetch!(:nodes)
-    |> Enum.reduce(ids, &collect_heex_node/2)
-  end
-
-  defp collect_heex_node({:block, type, name, attrs, children, _, _}, ids) do
-    Enum.reduce(children, collect_tag(type, name, attrs, ids), &collect_heex_node/2)
-  end
-
-  defp collect_heex_node({:self_close, type, name, attrs, _}, ids), do: collect_tag(type, name, attrs, ids)
-
-  defp collect_heex_node({type, expression, _}, ids) when type in [:eex, :body_expr] do
-    expression |> Code.string_to_quoted!() |> collect_ast(ids)
-  end
-
-  defp collect_heex_node({:eex_block, expression, clauses, _}, ids) do
-    state = {ids, String.ends_with?(String.trim_trailing(expression), "->")}
-
-    {clauses, {ids, _}} =
-      Enum.map_reduce(clauses, state, fn {nodes, expression, _}, {ids, previous_clause?} ->
-        clause? = String.ends_with?(String.trim_trailing(expression), "->")
-        # The first case/cond clause has no preceding body; empty branches still need nil.
-        body = if clause? and not previous_clause?, do: "\n", else: "\nnil\n"
-        {[body, expression], {Enum.reduce(nodes, ids, &collect_heex_node/2), clause?}}
-      end)
-
-    [expression | clauses] |> IO.iodata_to_binary() |> Code.string_to_quoted!() |> collect_ast(ids)
-  end
-
-  defp collect_heex_node(_, ids), do: ids
-
-  defp collect_source_file(path, ids) do
+  # Parsing every source is the costly part of a snapshot, so references are cached by content.
+  defp collect_source_file({path, digest}, {files, ids_by_sprite} = acc, cache) do
     case Path.extname(path) do
-      ".ex" -> path |> File.read!() |> Code.string_to_quoted!(file: path) |> collect_ast(ids)
-      ".heex" -> path |> File.read!() |> collect_heex(ids, path)
-      _ -> ids
+      extname when extname in [".ex", ".heex"] ->
+        references =
+          case cache do
+            %{^path => {^digest, references}} when is_list(references) -> references
+            _ -> source_references(extname, path, File.read!(path))
+          end
+
+        {Map.put(files, path, {digest, references}), Enum.reduce(references, ids_by_sprite, &put_reference/2)}
+
+      _ ->
+        acc
     end
   end
 
@@ -194,14 +110,19 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
   end
 
   defp collect_tag(type, tag, attrs, ids) do
-    {name, sprite, ids} = Enum.reduce(attrs, {nil, nil, ids}, &collect_attribute/2)
+    {name, sprite, ids} = Enum.reduce(attrs, {nil, nil, ids}, &put_attribute/2)
 
-    case {type, tag} do
-      {:local_component, "icon"} when is_binary(name) -> put_sprite_id(ids, sprite || "icons.svg", name)
-      {:local_component, "menu_icon"} -> put_icons_id(sprite, put_icons_id(name, ids))
+    case component(type, tag) do
+      "icon" when is_binary(name) -> put_sprite_id(ids, sprite || "icons.svg", name)
+      "menu_icon" -> put_icons_id(sprite, put_icons_id(name, ids))
       _ -> ids
     end
   end
+
+  # Aliases cannot be resolved here, so a remote call is matched by its function name like a local one.
+  defp component(:local_component, tag), do: tag
+  defp component(:remote_component, tag), do: tag |> :binary.split(".", [:global]) |> List.last()
+  defp component(_, _), do: nil
 
   defp configured_entries(assets_dir, config) do
     specs = Enum.map(config, &source_config(assets_dir, &1))
@@ -238,13 +159,8 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     end
   end
 
-  defp configured_source_file(source, :directory, name) do
-    path = source_path(source, name)
-    {path, name, file_digest!(path)}
-  end
-
-  defp configured_source_file(source, _, name) do
-    path = Path.expand(source)
+  defp configured_source_file(source, source_type, name) do
+    path = if source_type == :directory, do: source_path(source, name), else: source
     {path, name, file_digest!(path)}
   end
 
@@ -256,8 +172,7 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
       {names, nil} when is_list(names) and source_type == :directory ->
         Enum.map(names, fn
           name when is_binary(name) and name != "" ->
-            path = source_path(source, name)
-            {path, name, file_digest!(path)}
+            configured_source_file(source, source_type, name)
 
           name ->
             raise ArgumentError, "invalid SVG sprite name #{inspect(name)}; expected a non-empty string"
@@ -299,11 +214,7 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     if Path.extname(path) == ".svg", do: path, else: path <> ".svg"
   end
 
-  defp expand_project_path(path, assets_dir) do
-    if Path.type(path) == :absolute,
-      do: Path.expand(path),
-      else: assets_dir |> project_dir() |> Path.join(path) |> Path.expand()
-  end
+  defp expand_project_path(path, assets_dir), do: Path.expand(path, Config.project_dir(assets_dir))
 
   defp explicit_source_candidate(id, index, source, prefix, suffix, [entry | entries], basename?)
        when is_binary(entry) and entry != "" do
@@ -370,28 +281,51 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     end
   end
 
-  defp project_dir(assets_dir), do: Path.dirname(Path.expand(assets_dir))
+  defp put_attribute({key, value}, {name, sprite, ids}) do
+    value =
+      case value do
+        {:expr, ast} -> ast
+        {:string, value} when key in ["name", "sprite", "icon"] -> Entities.decode_attribute(value)
+        _ -> nil
+      end
 
-  defp put_icons_id(nil, ids_by_sprite), do: ids_by_sprite
-  defp put_icons_id("", ids_by_sprite), do: ids_by_sprite
-  defp put_icons_id(id, ids_by_sprite), do: put_sprite_id(ids_by_sprite, "icons.svg", id)
-
-  defp put_sprite_id(ids_by_sprite, sprite, id) do
-    case ids_by_sprite do
-      %{^sprite => ids} ->
-        if MapSet.member?(ids, id),
-          do: ids_by_sprite,
-          else: Map.put(ids_by_sprite, sprite, MapSet.put(ids, :binary.copy(id)))
-
-      _ ->
-        ids_by_sprite
+    case {key, value} do
+      {"name", value} when is_binary(value) -> {value, sprite, ids}
+      {"sprite", value} when is_binary(value) -> {name, value, ids}
+      {"icon", value} when is_binary(value) -> {name, sprite, put_icons_id(value, ids)}
+      _ -> {name, sprite, ids}
     end
   end
 
+  defp put_icons_id(id, ids) when id in [nil, ""], do: ids
+  defp put_icons_id(id, ids), do: put_sprite_id(ids, "icons.svg", id)
+
+  defp put_reference({sprite, id}, ids_by_sprite) do
+    case ids_by_sprite do
+      %{^sprite => ids} -> Map.put(ids_by_sprite, sprite, MapSet.put(ids, id))
+      _ -> ids_by_sprite
+    end
+  end
+
+  defp put_sprite_id(ids, sprite, id), do: MapSet.put(ids, {sprite, :binary.copy(id)})
+
+  defp scan_fingerprint do
+    {
+      __MODULE__.module_info(:md5),
+      Entities.module_info(:md5),
+      TemplateScanner.module_info(:md5),
+      Application.spec(:phoenix_live_view, :vsn),
+      System.version()
+    }
+  end
+
+  defp scanner, do: %{tag: &collect_tag/4, visit: &visit/2}
+
   defp select_source_candidate(_, candidate, nil), do: candidate
 
-  defp select_source_candidate(_, {score, _, _, _} = candidate, {best_score, _, _, _}) when score > best_score,
-    do: candidate
+  defp select_source_candidate(_, {score, _, _, _} = candidate, {best_score, _, _, _}) when score > best_score do
+    candidate
+  end
 
   defp select_source_candidate(_, {score, _, _, _}, {best_score, _, _, _} = best) when score < best_score, do: best
 
@@ -428,7 +362,7 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
 
   defp source_config(assets_dir, %{file: file, src: src} = opts)
        when is_binary(file) and file != "" and is_binary(src) and src != "" do
-    sprite = sprite_name(file)
+    sprite = ensure_svg_ext(file)
     mode = opts |> Map.get(:mode, default_mode(sprite)) |> sprite_mode!()
     prefix = Map.get(opts, :prefix, "")
     suffix = Map.get(opts, :suffix, "")
@@ -470,6 +404,14 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     source |> Path.join(path) |> Files.regular_file!(source)
   end
 
+  defp source_references(".ex", path, content) do
+    content |> Code.string_to_quoted!(file: path) |> TemplateScanner.ast(MapSet.new(), scanner()) |> MapSet.to_list()
+  end
+
+  defp source_references(".heex", path, content) do
+    content |> TemplateScanner.heex(MapSet.new(), scanner(), path) |> MapSet.to_list()
+  end
+
   defp source_type!(source) do
     case File.lstat(source) do
       {:ok, %{type: :directory}} ->
@@ -499,30 +441,43 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     raise ArgumentError, "invalid SVG sprite mode #{inspect(mode)}; expected :symbol or :stack"
   end
 
-  defp sprite_name(name) do
-    name = to_string(name)
-
-    if Path.extname(name) == ".svg", do: name, else: name <> ".svg"
-  end
-
   defp used_sprite_ids(assets_dir, specs) do
-    sprites =
-      Enum.reduce(specs, MapSet.new(), fn
-        {sprite, _, _, _, _, _, _, _, _, opts}, sprites ->
-          if Map.has_key?(opts, :names) or Map.has_key?(opts, :files),
-            do: sprites,
-            else: MapSet.put(sprites, sprite)
-      end)
+    ids_by_sprite =
+      for {sprite, _, _, _, _, _, _, _, _, opts} <- specs,
+          not is_map_key(opts, :names) and not is_map_key(opts, :files),
+          into: %{},
+          do: {sprite, MapSet.new()}
 
-    if MapSet.size(sprites) == 0 do
-      %{}
+    if ids_by_sprite == %{} do
+      ids_by_sprite
     else
-      ids_by_sprite = Map.new(sprites, &{&1, MapSet.new()})
+      cache_path = Path.join(Config.manifest_cache_dir(), @scan_cache_file)
+      fingerprint = scan_fingerprint()
 
-      assets_dir
-      |> project_dir()
-      |> Path.join("lib")
-      |> Files.reduce_regular_files(ids_by_sprite, &collect_source_file/2)
+      cache = Cache.read_map(cache_path, fingerprint)
+
+      {files, ids_by_sprite} =
+        assets_dir
+        |> Config.project_dir()
+        |> Path.join("lib")
+        |> Files.digests(@source_digest_cache_file)
+        |> Enum.reduce({%{}, ids_by_sprite}, &collect_source_file(&1, &2, cache))
+
+      if files != cache, do: Cache.write_term!(cache_path, {fingerprint, files})
+      ids_by_sprite
     end
   end
+
+  defp visit({:svg_sprite_href, _, [value]}, ids) when is_binary(value), do: {:ok, collect_sprite_href(value, ids)}
+
+  defp visit({{:., _, [_, :svg_sprite_href]}, _, [value]}, ids) when is_binary(value) do
+    {:ok, collect_sprite_href(value, ids)}
+  end
+
+  defp visit({kind, _, [{:icon_name, _, _}, [do: value]]}, ids) when kind in [:def, :defp] and is_binary(value) do
+    {:ok, put_icons_id(value, ids)}
+  end
+
+  defp visit({:icon, value}, ids) when is_binary(value), do: {:ok, put_icons_id(value, ids)}
+  defp visit(_, _), do: :next
 end

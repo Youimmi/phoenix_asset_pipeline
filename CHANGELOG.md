@@ -1,5 +1,37 @@
 # Changelog
 
+## 6.0.0
+
+### Breaking changes
+
+- Obfuscate CSS custom properties declared in stylesheets; list names also set or read by JavaScript or inline styles in `:public_css_variables`
+- Render `script/2` as `type="module" crossorigin="anonymous"`, ignoring caller `:type` and `:crossorigin`, and send `rel=modulepreload` early hints
+- Default `<.picture>` `fetchpriority` to `"auto"`
+- Without `:only` or `:only_matching`, pass unknown paths to the next plug instead of responding `404`
+- Reject class attributes that mix literal strings with dynamic values
+- Require Phoenix.HTML 4.4 (CVE-2026-117645) and Floki 0.38
+- Remove unused functions, including `build_static_file/2`, `source_snapshot/1`, `build_from_source_snapshot/1` and `Manifest.cached_loaded?/0`
+
+### Enhancements
+
+- Add `mix phoenix_asset_pipeline.images` to regenerate PNG sources from artwork
+- Apply endpoint path prefixes to SVG sprite hrefs and early hints
+- Accept script and style names without an extension
+- Minify empty attribute values to bare attribute names, and drop whitespace that is never rendered: at the document level, in `<head>`, tables and `<select>`
+- Rebuild cached manifests after upgrades and refresh cached URLs when the endpoint configuration changes
+- Update Bun to 1.4.4 and dependencies, including Vix 0.43 and mbrotli 0.5.22
+
+### Bug fixes
+
+- Prepare CSS on a dedicated stack, so deeply nested rules and long expressions no longer terminate the VM
+- Fix `Cache-Control` on 406 and 416 responses, `If-Match`, `If-None-Match: *`, content-coding preference and `nosniff`
+- Fix `@supports selector()` renaming, whitespace in spread attributes, `</` in inline styles and comma-separated `srcset`
+- Recover interrupted image generation and Bun installs, reinstall dependencies changed during installation, scan default arguments and `defdelegate` heads and skip typespecs when collecting image references, and keep manifests in sync with the latest static files
+- Track package metadata of extended TypeScript configs without watching their directories
+- Fix `localhost` host mirroring and IPv6 literals
+- Keep `<pre>`, `<textarea>`, `<script>` and `<style>` contents intact when dynamic parts split them
+- Formatter: produce output the next `mix format` keeps unchanged, keep multi-line literals, long literals, non-UTF-8 input, `phx-no-format` contents and expressions inside raw text elements unchanged, split classes on HTML whitespace only, keep pixel values during Tailwind canonicalization, and canonicalize single-quoted or spaced class attributes in one pass
+
 ## 5.0.1
 
 - Preserve CSS comments while rewriting selectors and custom properties

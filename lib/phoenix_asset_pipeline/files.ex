@@ -1,7 +1,36 @@
 defmodule PhoenixAssetPipeline.Files do
   @moduledoc false
 
-  def reduce_regular_files(root, acc, fun, mode \\ :sources) when is_function(fun, 2) do
+  alias PhoenixAssetPipeline.Cache
+  alias PhoenixAssetPipeline.Config
+  alias PhoenixAssetPipeline.Digest
+
+  # Returns `{path, digest}` for every regular file, sorted by path. Digests are cached by
+  # file identity in `cache_file`, so unchanged files are neither read nor hashed again.
+  def digests(root, cache_file, mode \\ :sources) do
+    cache_path = Path.join(Config.manifest_cache_dir(), cache_file)
+    fingerprint = Digest.module_info(:md5)
+    now = System.os_time(:second)
+
+    cache = Cache.read_map(cache_path, fingerprint)
+
+    {digests, next_cache} =
+      reduce_regular_files(
+        root,
+        {[], %{}},
+        fn path, stat, {digests, next_cache} ->
+          {digest, record} = cached_digest(path, stat, cache, now)
+          {[{path, digest} | digests], if(record, do: Map.put(next_cache, path, record), else: next_cache)}
+        end,
+        mode
+      )
+
+    if next_cache != cache, do: Cache.write_term!(cache_path, {fingerprint, next_cache})
+    Enum.sort(digests)
+  end
+
+  # Calls `fun` with each regular file's path, its lstat (POSIX times), and the accumulator.
+  def reduce_regular_files(root, acc, fun, mode \\ :sources) when is_function(fun, 3) do
     root = Path.expand(root)
     mode = if mode == :static, do: {:static, root}, else: mode
 
@@ -34,7 +63,7 @@ defmodule PhoenixAssetPipeline.Files do
 
   def regular_files(root, mode \\ :sources) do
     root
-    |> reduce_regular_files([], &[&1 | &2], mode)
+    |> reduce_regular_files([], fn path, _, paths -> [path | paths] end, mode)
     |> Enum.sort()
   end
 
@@ -42,6 +71,22 @@ defmodule PhoenixAssetPipeline.Files do
     path
     |> Path.relative_to(root)
     |> String.replace("\\", "/")
+  end
+
+  defp cached_digest(path, stat, cache, now) do
+    signature = {stat.size, stat.mtime, stat.ctime, stat.inode, stat.major_device}
+
+    case cache do
+      %{^path => {^signature, digest}} ->
+        {digest, {signature, digest}}
+
+      _ ->
+        digest = path |> File.read!() |> Digest.binary()
+        # Cache identifiable files only after their second-precision timestamps have settled.
+        settled? = stat.inode != 0 and max(stat.mtime, stat.ctime) < now
+
+        {digest, if(settled?, do: {signature, digest})}
+    end
   end
 
   defp excluded?("node_modules", _, :sources), do: true
@@ -63,9 +108,9 @@ defmodule PhoenixAssetPipeline.Files do
     else
       path = Path.join(dir, entry)
 
-      case File.lstat(path) do
+      case File.lstat(path, time: :posix) do
         {:ok, %{type: :directory}} -> reduce_dir(path, acc, fun, mode)
-        {:ok, %{type: :regular}} -> fun.(path, acc)
+        {:ok, %{type: :regular} = stat} -> fun.(path, stat, acc)
         {:ok, %{type: type}} -> raise ArgumentError, "unsupported file type #{inspect(type)}: #{path}"
         {:error, reason} -> raise File.Error, reason: reason, action: "stat file", path: path
       end

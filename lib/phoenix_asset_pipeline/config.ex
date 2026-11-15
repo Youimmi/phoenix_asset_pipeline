@@ -19,6 +19,9 @@ defmodule PhoenixAssetPipeline.Config do
   @image_max_pixels Application.compile_env(:phoenix_asset_pipeline, :image_max_pixels, 40_000_000)
   @otp_app Application.compile_env!(:phoenix_asset_pipeline, :otp_app)
   @precompiled_manifest Application.compile_env(:phoenix_asset_pipeline, :precompiled_manifest, false)
+  @public_css_variables :phoenix_asset_pipeline
+                        |> Application.compile_env(:public_css_variables, [])
+                        |> MapSet.new()
   @static_dir Application.compile_env(:phoenix_asset_pipeline, :static_dir, "priv/static")
   @svg_sprites Application.compile_env(:phoenix_asset_pipeline, :svg_sprites, [])
   @endpoint_key {__MODULE__, :endpoint}
@@ -39,21 +42,23 @@ defmodule PhoenixAssetPipeline.Config do
     raise ArgumentError, ":image_max_pixels for :phoenix_asset_pipeline must be a positive integer"
   end
 
+  if not Enum.all?(@public_css_variables, &match?(<<"--", _, _::binary>>, &1)) do
+    raise ArgumentError, ":public_css_variables for :phoenix_asset_pipeline must contain custom property names"
+  end
+
   def already_compressed_extensions, do: @already_compressed_extensions
 
   def application_ebin_dir do
-    case :code.lib_dir(otp_app()) do
+    case :code.lib_dir(@otp_app) do
       path when is_list(path) -> path |> List.to_string() |> Path.join("ebin")
       _ -> nil
     end
   end
 
   def assets_dir, do: Path.expand(@assets_dir)
-  def build_path, do: Path.expand(mix_project_build_path() || Path.join(["_build", to_string(mix_env())]))
+  def build_path, do: Path.expand(mix_project(&Mix.Project.build_path/1) || Path.join("_build", to_string(mix_env())))
 
-  def colocated_dir do
-    Path.join([build_path(), "phoenix-colocated", to_string(otp_app())])
-  end
+  def colocated_dir, do: Path.join([build_path(), "phoenix-colocated", to_string(@otp_app)])
 
   def endpoint do
     case :persistent_term.get(@endpoint_key, @endpoint_missing) do
@@ -79,7 +84,7 @@ defmodule PhoenixAssetPipeline.Config do
   def js_drop do
     :phoenix_asset_pipeline
     |> Application.get_env(:js_drop, [])
-    |> normalize_js_drop()
+    |> Enum.map(fn value when is_atom(value) or is_binary(value) -> to_string(value) end)
   end
 
   def live_reload_event do
@@ -94,15 +99,24 @@ defmodule PhoenixAssetPipeline.Config do
     Application.get_env(:phoenix_asset_pipeline, :live_reload_topic, "phoenix:live_reload")
   end
 
-  def manifest_cache_dir do
-    build_path()
-    |> Path.join("phoenix_asset_pipeline")
-    |> Path.expand()
+  def manifest_cache_dir, do: Path.join(build_path(), "phoenix_asset_pipeline")
+
+  # Applies `fun` to the current Mix project config; `nil` outside a Mix project.
+  def mix_project(fun) when is_function(fun, 1) do
+    if Code.ensure_loaded?(Mix.Project) do
+      config = Mix.Project.config()
+      if config[:app], do: fun.(config)
+    end
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
   end
 
   def otp_app, do: @otp_app
   def precompiled_manifest?, do: @precompiled_manifest
-  def project_dir, do: Path.dirname(assets_dir())
+  def project_dir(assets_dir \\ @assets_dir), do: assets_dir |> Path.expand() |> Path.dirname()
+  def public_css_variables, do: @public_css_variables
   def static_dir, do: Path.expand(@static_dir)
   def svg_sprites, do: @svg_sprites
 
@@ -110,13 +124,9 @@ defmodule PhoenixAssetPipeline.Config do
     endpoint = endpoint()
 
     is_atom(endpoint) and
-      endpoint
-      |> endpoint_config()
+      @otp_app
+      |> Application.get_env(endpoint, [])
       |> Keyword.get(:code_reloader, false)
-  end
-
-  defp endpoint_config(endpoint) do
-    Application.get_env(otp_app(), endpoint, [])
   end
 
   defp mix_env do
@@ -128,20 +138,4 @@ defmodule PhoenixAssetPipeline.Config do
   catch
     :exit, _ -> :prod
   end
-
-  defp mix_project_build_path do
-    if Code.ensure_loaded?(Mix.Project) do
-      config = Mix.Project.config()
-      if config[:app], do: Mix.Project.build_path(config)
-    end
-  rescue
-    _ -> nil
-  catch
-    :exit, _ -> nil
-  end
-
-  defp normalize_js_drop(values) when is_list(values), do: Enum.map(values, &normalize_js_drop_value/1)
-
-  defp normalize_js_drop_value(value) when is_atom(value), do: to_string(value)
-  defp normalize_js_drop_value(value) when is_binary(value), do: value
 end

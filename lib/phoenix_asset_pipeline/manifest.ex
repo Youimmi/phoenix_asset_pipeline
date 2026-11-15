@@ -10,9 +10,11 @@ defmodule PhoenixAssetPipeline.Manifest do
   """
   use GenServer
 
+  alias PhoenixAssetPipeline.Cache
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.StaticAsset
 
+  @encodings ["raw" | StaticAsset.encoding_names()]
   @precompiled? Config.precompiled_manifest?()
   @precompiled_module Module.concat(__MODULE__, Precompiled)
   @manifest_cache_file "asset_manifest.term"
@@ -66,49 +68,28 @@ defmodule PhoenixAssetPipeline.Manifest do
     def init(_), do: {:ok, nil}
 
     @doc false
-    def precompiled_loaded?, do: precompiled_module_loaded?()
+    def loaded? do
+      Code.ensure_loaded?(@precompiled_module) and function_exported?(@precompiled_module, :manifest, 0)
+    end
+
     @doc false
     def put(manifest) when is_map(manifest), do: raise("the precompiled asset manifest is immutable")
 
     @doc false
-    def put_compile_manifest(manifest) when is_map(manifest), do: put(manifest)
-
-    @doc false
     def start_link(_) do
-      ensure_precompiled!()
-      :persistent_term.put(@runtime_manifest_key, build_generated_files(@precompiled_module.manifest()))
-      :ignore
-    end
-
-    defp ensure_precompiled! do
-      if precompiled_module_loaded?() do
-        :ok
-      else
+      if not loaded?() do
         raise """
         missing precompiled asset manifest module #{inspect(@precompiled_module)}
 
         Run `MIX_ENV=prod mix compile` before building the release.
         """
       end
-    end
 
-    defp precompiled_module_loaded? do
-      Code.ensure_loaded?(@precompiled_module) and function_exported?(@precompiled_module, :manifest, 0)
+      :persistent_term.put(@runtime_manifest_key, build_generated_files(@precompiled_module.manifest()))
+      :ignore
     end
   else
     @current_generation_key :__phoenix_asset_pipeline_manifest_current_generation__
-
-    @doc false
-    def cached_loaded? do
-      case read_cached_manifest() do
-        :error ->
-          false
-
-        manifest ->
-          :persistent_term.put(@cold_cache_key, manifest)
-          true
-      end
-    end
 
     @doc """
     Reads a nested manifest value by section and key.
@@ -127,7 +108,14 @@ defmodule PhoenixAssetPipeline.Manifest do
     """
     def get(term, default \\ nil)
 
-    def get(:manifest, default), do: read_manifest(default)
+    def get(:manifest, default) do
+      case snapshot() do
+        @snapshot_missing -> current_manifest()
+        {:generation, generation} -> generation_manifest(generation)
+        {:literal, manifest} -> manifest
+        nil -> default
+      end
+    end
 
     def get(term, default) do
       case snapshot() do
@@ -172,7 +160,24 @@ defmodule PhoenixAssetPipeline.Manifest do
         retired: MapSet.new()
       }
 
-      {:ok, load_initial_manifest(state)}
+      {:ok, replace_manifest(state, build_generated_files(cold_manifest()))}
+    end
+
+    # A running server already holds the manifest; only a cold VM reads the cache file.
+    @doc false
+    def loaded? do
+      if Process.whereis(__MODULE__) do
+        true
+      else
+        case read_cached_manifest() do
+          :error ->
+            false
+
+          manifest ->
+            :persistent_term.put(@cold_cache_key, manifest)
+            true
+        end
+      end
     end
 
     @doc """
@@ -216,7 +221,7 @@ defmodule PhoenixAssetPipeline.Manifest do
       if Process.whereis(__MODULE__) do
         GenServer.call(__MODULE__, :acquire_snapshot)
       else
-        cold_snapshot()
+        {:literal, cold_manifest()}
       end
     end
 
@@ -234,9 +239,6 @@ defmodule PhoenixAssetPipeline.Manifest do
       %{state | retired: retired}
     end
 
-    defp cold_find(term, key), do: map_find(cold_manifest(), term, key)
-    defp cold_get(term, default), do: Map.get(cold_manifest(), term, default)
-
     defp cold_manifest do
       case :persistent_term.get(@cold_cache_key, @storage_missing) do
         @storage_missing ->
@@ -249,20 +251,15 @@ defmodule PhoenixAssetPipeline.Manifest do
       end
     end
 
-    defp cold_manifest_value(_default), do: cold_manifest()
-    defp cold_snapshot, do: {:literal, cold_manifest()}
-
+    # The current_* readers retry when the generation is replaced mid-read.
     defp current_find(term, key) do
       case current_generation() do
         @storage_missing ->
-          cold_find(term, key)
+          map_find(cold_manifest(), term, key)
 
         generation ->
           value = generation_find(generation, term, key)
-
-          if current_generation() == generation,
-            do: value,
-            else: current_find(term, key)
+          if current_generation() == generation, do: value, else: current_find(term, key)
       end
     end
 
@@ -273,28 +270,22 @@ defmodule PhoenixAssetPipeline.Manifest do
     defp current_get(term, default) do
       case current_generation() do
         @storage_missing ->
-          cold_get(term, default)
+          Map.get(cold_manifest(), term, default)
 
         generation ->
           value = generation_get(generation, term, default)
-
-          if current_generation() == generation,
-            do: value,
-            else: current_get(term, default)
+          if current_generation() == generation, do: value, else: current_get(term, default)
       end
     end
 
-    defp current_manifest(default) do
+    defp current_manifest do
       case current_generation() do
         @storage_missing ->
-          cold_manifest_value(default)
+          cold_manifest()
 
         generation ->
           manifest = generation_manifest(generation)
-
-          if current_generation() == generation,
-            do: manifest,
-            else: current_manifest(default)
+          if current_generation() == generation, do: manifest, else: current_manifest()
       end
     end
 
@@ -343,7 +334,8 @@ defmodule PhoenixAssetPipeline.Manifest do
       __MODULE__
       |> :ets.match_object({{generation, :_, :_}, :_})
       |> Enum.reduce(manifest, fn {{^generation, term, key}, value}, manifest ->
-        Map.put(manifest, term, Map.put(Map.fetch!(manifest, term), key, value))
+        # The section marker can already be deleted; the caller retries on a replaced generation.
+        Map.put(manifest, term, Map.put(Map.get(manifest, term, %{}), key, value))
       end)
     rescue
       ArgumentError -> %{}
@@ -385,10 +377,6 @@ defmodule PhoenixAssetPipeline.Manifest do
       ]
     end
 
-    defp load_initial_manifest(state) do
-      replace_manifest(state, build_generated_files(cold_manifest()))
-    end
-
     defp lookup_element(key, default) do
       :ets.lookup_element(__MODULE__, key, 2, default)
     rescue
@@ -403,7 +391,7 @@ defmodule PhoenixAssetPipeline.Manifest do
     end
 
     defp read_cached_manifest do
-      PhoenixAssetPipeline.Cache.read_term(cache_path(), :error, fn
+      Cache.read_term(cache_path(), :error, fn
         manifest when is_map(manifest) ->
           if valid?(manifest), do: {:ok, manifest}, else: :error
 
@@ -416,15 +404,6 @@ defmodule PhoenixAssetPipeline.Manifest do
       case read_cached_manifest() do
         :error -> raise "missing or invalid cached asset manifest #{cache_path()}; run `mix compile`"
         manifest -> manifest
-      end
-    end
-
-    defp read_manifest(default) do
-      case snapshot() do
-        @snapshot_missing -> current_manifest(default)
-        {:generation, generation} -> generation_manifest(generation)
-        {:literal, manifest} -> manifest
-        nil -> default
       end
     end
 
@@ -548,7 +527,7 @@ defmodule PhoenixAssetPipeline.Manifest do
     def save_cached(_), do: raise("cached manifests are disabled in :precompiled mode")
   else
     def save_cached(manifest) when is_map(manifest) do
-      PhoenixAssetPipeline.Cache.write_term!(cache_path(), manifest)
+      Cache.write_term!(cache_path(), manifest)
       :persistent_term.put(@cold_cache_key, manifest)
 
       :ok
@@ -564,7 +543,7 @@ defmodule PhoenixAssetPipeline.Manifest do
     |> File.mkdir_p!()
 
     binary = precompiled_beam!(manifest)
-    PhoenixAssetPipeline.Cache.write_atomic!(path, binary)
+    Cache.write_atomic!(path, binary)
     register_precompiled_module!(path)
     {:module, @precompiled_module} = :code.load_binary(@precompiled_module, String.to_charlist(path), binary)
 
@@ -579,8 +558,8 @@ defmodule PhoenixAssetPipeline.Manifest do
         digest: digest,
         image_sources: image_sources,
         images: images,
-        scripts: scripts,
         script_tags: script_tags,
+        scripts: scripts,
         signature: signature,
         static_files: static_files,
         static_signature: static_signature,
@@ -653,55 +632,29 @@ defmodule PhoenixAssetPipeline.Manifest do
 
   defp csp_directives_valid?(_), do: false
 
-  defp encoded_asset_data_valid?(%{"raw" => raw} = data) do
-    encoded_asset_entry_valid?(raw) and
-      Enum.all?(data, fn
-        {encoding, entry} when encoding in ["raw", "br", "deflate", "gzip", "zstd"] ->
-          encoded_asset_entry_valid?(entry)
-
-        _ ->
-          false
-      end)
-  end
-
-  defp encoded_asset_data_valid?(_), do: false
-
-  defp encoded_asset_entry_valid?({content, stored_size})
-       when is_binary(content) and is_integer(stored_size) and stored_size == byte_size(content), do: true
-
-  defp encoded_asset_entry_valid?(_), do: false
-
-  defp encoded_assets_valid?(assets) when is_map(assets) do
+  defp encoded_assets_valid?(assets, entry_size) when is_map(assets) do
     Enum.all?(assets, fn
-      {_, %{content_type: content_type, data: data, digest: digest}}
-      when is_binary(content_type) and is_map(data) and is_binary(digest) ->
-        encoded_asset_data_valid?(data)
+      {_, %{content_type: content_type, data: %{"raw" => _} = data, digest: digest}}
+      when is_binary(content_type) and is_binary(digest) ->
+        Enum.all?(data, &encoded_entry_valid?(&1, entry_size))
 
       _ ->
         false
     end)
   end
 
-  defp encoded_assets_valid?(_), do: false
+  defp encoded_assets_valid?(_, _), do: false
 
-  defp encoded_static_data_valid?(%{"raw" => raw} = data) do
-    encoded_static_entry_valid?(raw) and
-      Enum.all?(data, fn
-        {encoding, entry} when encoding in ["raw", "br", "deflate", "gzip", "zstd"] ->
-          encoded_static_entry_valid?(entry)
+  # Digested assets store {content, size}; static files add their ETag.
+  defp encoded_entry_valid?({encoding, entry}, entry_size)
+       when encoding in @encodings and tuple_size(entry) == entry_size do
+    content = elem(entry, 0)
 
-        _ ->
-          false
-      end)
+    is_binary(content) and elem(entry, 1) === byte_size(content) and
+      (entry_size == 2 or is_binary(elem(entry, 2)))
   end
 
-  defp encoded_static_data_valid?(_), do: false
-
-  defp encoded_static_entry_valid?({content, stored_size, etag})
-       when is_binary(content) and is_integer(stored_size) and stored_size == byte_size(content) and is_binary(etag),
-       do: true
-
-  defp encoded_static_entry_valid?(_), do: false
+  defp encoded_entry_valid?(_, _), do: false
 
   defp image_sources_valid?(sources) when is_map(sources) do
     Enum.all?(sources, fn
@@ -716,12 +669,12 @@ defmodule PhoenixAssetPipeline.Manifest do
   defp image_sources_valid?(_), do: false
 
   defp manifest_assets_valid?(images, image_sources, scripts, script_tags, style_tags, static_files, csp_directives) do
-    encoded_assets_valid?(images) and
+    encoded_assets_valid?(images, 2) and
       image_sources_valid?(image_sources) and
-      encoded_assets_valid?(scripts) and
+      encoded_assets_valid?(scripts, 2) and
       script_tags_valid?(script_tags) and
       style_tags_valid?(style_tags) and
-      static_files_valid?(static_files) and
+      encoded_assets_valid?(static_files, 3) and
       csp_directives_valid?(csp_directives)
   end
 
@@ -781,19 +734,14 @@ defmodule PhoenixAssetPipeline.Manifest do
         |> :file.consult()
 
       modules =
-        properties
-        |> Keyword.get(:modules, [])
-        |> then(&[@precompiled_module | &1])
+        [@precompiled_module | Keyword.get(properties, :modules, [])]
         |> Enum.uniq()
         |> Enum.sort()
 
       properties = Keyword.put(properties, :modules, modules)
       application = {:application, :phoenix_asset_pipeline, properties}
 
-      PhoenixAssetPipeline.Cache.write_atomic!(
-        app_file,
-        IO.iodata_to_binary(:io_lib.format(~c"~tp.~n", [application]))
-      )
+      Cache.write_atomic!(app_file, IO.iodata_to_binary(:io_lib.format(~c"~tp.~n", [application])))
     end
   end
 
@@ -805,19 +753,6 @@ defmodule PhoenixAssetPipeline.Manifest do
   end
 
   defp script_tags_valid?(_), do: false
-
-  defp static_files_valid?(static_files) when is_map(static_files) do
-    Enum.all?(static_files, fn
-      {_, %{content_type: content_type, data: data, digest: digest}}
-      when is_binary(content_type) and is_map(data) and is_binary(digest) ->
-        encoded_static_data_valid?(data)
-
-      _ ->
-        false
-    end)
-  end
-
-  defp static_files_valid?(_), do: false
 
   defp style_tags_valid?(tags) when is_map(tags) do
     Enum.all?(tags, fn

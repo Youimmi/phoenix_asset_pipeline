@@ -8,31 +8,31 @@ defmodule PhoenixAssetPipeline.Bun do
   @fingerprint_chunk_size 1024 * 1024
   @fingerprint_key {__MODULE__, :fingerprint}
   @install_lock {__MODULE__, :install}
-  @version "1.4.3"
+  @version "1.4.4"
 
   @checksums Map.new(
                [
                  {"darwin-aarch64",
-                  {"80afd4c069b46a6fa8f3ec520bebc750a7843e4a8d5b9583d29ad436c00a3403",
-                   "28c7dd0a06916aba284d570ef44a2d70e9c538eaf2ba58dfe0910525563b3f79"}},
+                  {"c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510",
+                   "0a2237cdcfa0d16ef501d9acca9f0026309ef348bea7393a64e8d1e3609565cc"}},
                  {"darwin-x64",
-                  {"62660e6438eb872278877acca77e1152d5d031324df368d4a81b428211489d2d",
-                   "c2a945a9d33f9088b32ac3550d1d1fd485a7fc10d71c66f91ef0d33b41cefa7c"}},
+                  {"50a3491f73abc2fe81673171a85762d3bc2cc1680ccecadd983de99adf77977e",
+                   "c35307c7d45d65c5a385a58c4a6cb0bb9499e4e626abdee207c177a77ba666ab"}},
                  {"linux-aarch64",
-                  {"efa9813da5ed72423bf847f916e8d2c47c0d776add972354026a75e10da9aa21",
-                   "029ece746ac9f970c76d8f48bdd1b1d0c52f3636b74d19f546f5e7c1165c0abe"}},
+                  {"baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e",
+                   "354c2b049c716aca07b2e5cddb887928ac58950675d1258bb6312083917793b6"}},
                  {"linux-aarch64-musl",
-                  {"8de8a0003cc2707bb555887e3d450e24e1edf3f605f491393e89ed61a8853420",
-                   "94208b02231f5357be00ebd437ae9afb87d406887ba60f5f7a5732e677bde89e"}},
+                  {"57f01b02ac7113c61c935f28f38c2eab849e3c970dab21f8b640a87b1ef65009",
+                   "a6a3d99a48600b59597070d2d2ff8d37b65975b8aab247ee3479b1eb33d000a6"}},
                  {"linux-x64",
-                  {"3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18",
-                   "7ce7d6b654eddeec20afddf2396317fba6dc19ab52788a27e894e1806bf8f24b"}},
+                  {"bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c",
+                   "10702245766b225e70bbf6235fd6b47214fd94b4760d00ffaed8ab0df57ac235"}},
                  {"linux-x64-musl",
-                  {"6e9ea98554ea0d05efda5840ae292618aaa3adefd66b0853520c5c86a37eac9c",
-                   "2a50a646294a1b5ff817d03313c7354f8ac43b7a37941b89f4d9b17bc5e86611"}},
+                  {"a5a8ccc5e74dcb883fe974f125a7bdb3b41e5195ed1b870e73f17effd3eb2b2d",
+                   "29a31375a72f97c7e3fc25dd57d7dde88da5907aa8970808f57f91e0711bdad2"}},
                  {"windows-x64",
-                  {"0bf84e808552beea67bf1202a287a35c6c825d837b287b3f8e9dd513dba35d3d",
-                   "095db4abae203d42f29fdec26da4a882fcde6333cdd84e40c0c7828c0cf543f6"}}
+                  {"cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5",
+                   "cb1d8e6564e655e49d30cead359750a1cbbd12f42651caa4b62244d7bd93c244"}}
                ],
                fn {target, {archive, executable}} ->
                  {target, {Base.decode16!(archive, case: :lower), Base.decode16!(executable, case: :lower)}}
@@ -78,7 +78,6 @@ defmodule PhoenixAssetPipeline.Bun do
     :ok
   end
 
-  @doc false
   def ensure_fingerprint! do
     fingerprint = fingerprint()
 
@@ -89,10 +88,9 @@ defmodule PhoenixAssetPipeline.Bun do
     end
   end
 
-  @doc false
   def fingerprint do
     path = bin_path()
-    {path, version(), executable_fingerprint(path)}
+    {path, @version, executable_fingerprint(path)}
   end
 
   def run(args, opts) when is_list(args) and is_list(opts) do
@@ -100,22 +98,20 @@ defmodule PhoenixAssetPipeline.Bun do
     run_ready(args, opts)
   end
 
-  @doc false
   def run_ready(args, opts) when is_list(args) and is_list(opts) do
-    System.cmd(bin_path(), ["--no-orphans", "--eval", @wrapper_script, bin_path(), "--no-orphans" | args], opts)
+    path = bin_path()
+    System.cmd(path, ["--no-orphans", "--eval", @wrapper_script, path, "--no-orphans" | args], opts)
   end
 
-  def version, do: @version
-
-  defp archive_binary!(version) do
+  defp archive_binary! do
     target = target()
-    url = download_url(version, target)
-    scheme = URI.parse(url).scheme
+    url = "https://github.com/oven-sh/bun/releases/download/bun-v#{@version}/bun-#{target}.zip"
+    proxy = proxy()
 
-    :ok = ensure_http_started!()
-    :ok = configure_proxy(scheme)
+    {:ok, _} = Application.ensure_all_started([:inets, :ssl])
+    configure_proxy(proxy)
 
-    case :httpc.request(:get, {String.to_charlist(url), []}, http_options(scheme),
+    case :httpc.request(:get, {String.to_charlist(url), []}, http_options(proxy),
            body_format: :binary,
            max_header_size: 65_536
          ) do
@@ -124,10 +120,10 @@ defmodule PhoenixAssetPipeline.Bun do
         verify_checksum!(body, archive_checksum, "Bun archive #{url}")
 
       {:ok, {{_, status, _}, _, body}} ->
-        raise "could not download Bun #{version}: #{url} returned #{status}\n#{body}"
+        raise "could not download Bun #{@version}: #{url} returned #{status}\n#{body}"
 
       {:error, reason} ->
-        raise "could not download Bun #{version}: #{inspect(reason)}"
+        raise "could not download Bun #{@version}: #{inspect(reason)}"
     end
   end
 
@@ -141,25 +137,10 @@ defmodule PhoenixAssetPipeline.Bun do
     end
   end
 
-  defp configure_proxy(scheme) do
-    with proxy when is_binary(proxy) <- proxy_for_scheme(scheme),
-         %{host: host} = uri when is_binary(host) <- URI.parse(proxy) do
-      proxy_option = if scheme == "https", do: :https_proxy, else: :proxy
-      :httpc.set_options([{proxy_option, {{to_charlist(host), proxy_port(uri, scheme)}, []}}])
-    end
+  defp configure_proxy(nil), do: :ok
 
-    :ok
-  end
-
-  defp download_url(version, target) do
-    "https://github.com/oven-sh/bun/releases/download/bun-v#{version}/bun-#{target}.zip"
-  end
-
-  defp ensure_http_started! do
-    with {:ok, _} <- Application.ensure_all_started(:inets),
-         {:ok, _} <- Application.ensure_all_started(:ssl) do
-      :ok
-    end
+  defp configure_proxy(%{host: host, port: port}) do
+    :httpc.set_options(https_proxy: {{to_charlist(host), port || 443}, []})
   end
 
   defp ensure_once! do
@@ -175,7 +156,7 @@ defmodule PhoenixAssetPipeline.Bun do
     end
   end
 
-  defp ensure_unlocked! do
+  defp ensure_unlocked!(install? \\ true) do
     {_, expected} = Map.fetch!(@checksums, target())
 
     case executable_fingerprint(bin_path()) do
@@ -183,20 +164,15 @@ defmodule PhoenixAssetPipeline.Bun do
       when @execute_mask == 0 or Bitwise.band(mode, @execute_mask) != 0 ->
         :ok
 
-      {:sha256, _, ^expected} ->
+      {:sha256, _, ^expected} when install? ->
         File.chmod!(bin_path(), 0o755)
 
-      _ ->
-        :ok = install!(version())
+      _ when install? ->
+        :ok = install!()
+        ensure_unlocked!(false)
 
-        case executable_fingerprint(bin_path()) do
-          {:sha256, mode, ^expected}
-          when @execute_mask == 0 or Bitwise.band(mode, @execute_mask) != 0 ->
-            :ok
-
-          fingerprint ->
-            raise "installed Bun executable has an invalid checksum or mode: #{inspect(fingerprint)}"
-        end
+      fingerprint ->
+        raise "installed Bun executable has an invalid checksum or mode: #{inspect(fingerprint)}"
     end
   end
 
@@ -252,8 +228,8 @@ defmodule PhoenixAssetPipeline.Bun do
     end
   end
 
-  defp http_options(scheme) do
-    maybe_add_proxy_auth(
+  defp http_options(proxy) do
+    proxy_auth(proxy) ++
       [
         ssl:
           [
@@ -261,60 +237,48 @@ defmodule PhoenixAssetPipeline.Bun do
             depth: 4,
             customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
           ] ++ ca_options()
-      ],
-      scheme
-    )
+      ]
   end
 
-  defp install!(version) do
+  defp install! do
     bin_path = bin_path()
-    tmp_dir = Path.join(Path.dirname(bin_path), ".bun-#{System.pid()}-#{System.unique_integer([:monotonic, :positive])}")
+    dir = Path.dirname(bin_path)
+    tmp_dir = Path.join(dir, ".bun-#{System.pid()}-#{System.unique_integer([:monotonic, :positive])}")
 
-    File.mkdir_p!(Path.dirname(bin_path))
+    File.mkdir_p!(dir)
     File.mkdir!(tmp_dir)
 
     try do
-      downloaded_path = unzip!(archive_binary!(version), tmp_dir)
-      tmp_path = Path.join(tmp_dir, executable_name())
+      tmp_path = unzip!(archive_binary!(), tmp_dir)
 
-      File.cp!(downloaded_path, tmp_path)
       File.chmod!(tmp_path, 0o755)
       File.rename!(tmp_path, bin_path)
     after
       File.rm_rf(tmp_dir)
     end
-
-    :ok
   end
 
   defp linux_target(target, parts) do
     if "musl" in parts, do: target <> "-musl", else: target
   end
 
-  defp maybe_add_proxy_auth(http_options, scheme) do
-    case proxy_auth(scheme) do
-      nil -> http_options
-      auth -> [{:proxy_auth, auth} | http_options]
-    end
-  end
-
-  defp proxy_auth(scheme) do
-    with proxy when is_binary(proxy) <- proxy_for_scheme(scheme),
-         %{userinfo: userinfo} when is_binary(userinfo) <- URI.parse(proxy),
-         [username, password] <- String.split(userinfo, ":", parts: 2) do
-      {to_charlist(username), to_charlist(password)}
+  defp proxy do
+    with proxy when is_binary(proxy) <- System.get_env("HTTPS_PROXY") || System.get_env("https_proxy"),
+         %{host: host} = uri when is_binary(host) <- URI.parse(proxy) do
+      uri
     else
       _ -> nil
     end
   end
 
-  defp proxy_for_scheme("http"), do: System.get_env("HTTP_PROXY") || System.get_env("http_proxy")
-  defp proxy_for_scheme("https"), do: System.get_env("HTTPS_PROXY") || System.get_env("https_proxy")
-  defp proxy_for_scheme(_), do: nil
+  defp proxy_auth(%{userinfo: userinfo}) when is_binary(userinfo) do
+    case String.split(userinfo, ":", parts: 2) do
+      [username, password] -> [proxy_auth: {to_charlist(username), to_charlist(password)}]
+      _ -> []
+    end
+  end
 
-  defp proxy_port(%{port: nil}, "https"), do: 443
-  defp proxy_port(%{port: nil}, _), do: 80
-  defp proxy_port(%{port: port}, _), do: port
+  defp proxy_auth(_), do: []
 
   defp target do
     arch =
@@ -334,13 +298,9 @@ defmodule PhoenixAssetPipeline.Bun do
   end
 
   defp unzip!(binary, tmp_dir) do
-    zipped_target =
-      case :os.type() do
-        {:win32, _} -> "bun-#{target()}/bun.exe"
-        _ -> "bun-#{target()}/bun"
-      end
+    file = ~c"bun-#{target()}/#{executable_name()}"
 
-    case :zip.unzip(binary, cwd: to_charlist(tmp_dir), file_list: [to_charlist(zipped_target)]) do
+    case :zip.unzip(binary, cwd: to_charlist(tmp_dir), file_list: [file]) do
       {:ok, [path]} -> List.to_string(path)
       other -> raise "could not unpack Bun archive: #{inspect(other)}"
     end

@@ -6,19 +6,21 @@ defmodule PhoenixAssetPipeline.Plug do
   augmentation, private URL assigns, reporting endpoints, and manifest snapshots
   during code reloading.
   """
+  @behaviour Plug
 
   import Plug.Conn,
     only: [
       get_req_header: 2,
       get_resp_header: 2,
       halt: 1,
-      inform!: 3,
+      inform: 3,
       put_resp_header: 3,
-      register_before_send: 2,
       read_body: 2,
+      register_before_send: 2,
       send_resp: 3
     ]
 
+  alias PhoenixAssetPipeline.Helpers
   alias PhoenixAssetPipeline.Manifest
   alias Plug.Conn.Utils
 
@@ -50,14 +52,14 @@ defmodule PhoenixAssetPipeline.Plug do
   @content_security_policy_extra @content_security_policy_extra
                                  |> Enum.sort()
                                  |> Enum.map_join("", fn {directive, values} ->
-                                   if !(is_binary(directive) and
-                                          Regex.match?(~r/\A[a-z][a-z0-9-]*\z/, directive) and
-                                          not List.keymember?(@content_security_policy_directives, directive, 0) and
-                                          directive not in ~w(script-src-elem script-src-attr style-src style-src-elem style-src-attr) and
-                                          is_list(values) and
-                                          Enum.all?(values, fn value ->
-                                            is_binary(value) and Regex.match?(~r/\A[^\x00-\x20\x7f-\xff;,]+\z/, value)
-                                          end)) do
+                                   if not (is_binary(directive) and
+                                             Regex.match?(~r/\A[a-z][a-z0-9-]*\z/, directive) and
+                                             not List.keymember?(@content_security_policy_directives, directive, 0) and
+                                             directive not in ~w(script-src-elem script-src-attr style-src style-src-elem style-src-attr) and
+                                             is_list(values) and
+                                             Enum.all?(values, fn value ->
+                                               is_binary(value) and Regex.match?(~r/\A[^\x00-\x20\x7f-\xff;,]+\z/, value)
+                                             end)) do
                                      raise ArgumentError,
                                            "invalid additional CSP directive: #{inspect({directive, values})}"
                                    end
@@ -86,6 +88,7 @@ defmodule PhoenixAssetPipeline.Plug do
   @endpoint_urls_missing :__phoenix_asset_pipeline_endpoint_urls_missing__
   @header_cache_missing :__phoenix_asset_pipeline_header_cache_missing__
 
+  @impl true
   def call(conn, action) when is_atom(action) do
     apply(__MODULE__, action, [conn, []])
   end
@@ -127,21 +130,28 @@ defmodule PhoenixAssetPipeline.Plug do
   @doc """
   Sends 103 early hints for the static origin, selected scripts, and configured links.
 
-  Set `:scripts` to the manifest entry names required by the response, including
-  the `.js` extension, for example `scripts: ["app.js"]`. The default is `[]`.
-  Script preloads include their integrity hash and use anonymous CORS.
+  Set `:scripts` to the manifest entry names required by the response, named as
+  for `PhoenixAssetPipeline.Helpers.script/2`, for example `scripts: ["app"]`.
+  The default is `[]`.
+  Scripts are preloaded as modules with their integrity hash and anonymous CORS.
   Additional links can be supplied through `:links`.
   """
   def early_hints(%{private: %{phoenix_endpoint: endpoint, phoenix_static_url: static_url}} = conn, opts) do
     scripts = Keyword.get(opts, :scripts, [])
     links = Keyword.get(opts, :links, [])
-    link = cached_early_hints(endpoint, static_url, scripts, links)
 
-    inform!(conn, :early_hints, [{"link", link}])
+    link =
+      endpoint
+      |> cached_early_hints(static_url, scripts)
+      |> append_configured_early_hints(links, static_url)
+      |> IO.iodata_to_binary()
+
+    inform(conn, :early_hints, [{"link", link}])
   end
 
   def early_hints(conn, _), do: conn
 
+  @impl true
   def init(action), do: action
 
   @doc """
@@ -149,6 +159,9 @@ defmodule PhoenixAssetPipeline.Plug do
 
   Use this around Phoenix code reloading so a request sees a consistent
   manifest even when templates trigger a rebuild during rendering.
+
+  Register it before `:put_content_security_policy`: before-send callbacks run
+  in reverse order, and the policy must be built while the snapshot is held.
   """
   def put_asset_manifest_snapshot(conn, _) do
     previous_snapshot = Manifest.put_snapshot()
@@ -183,8 +196,9 @@ defmodule PhoenixAssetPipeline.Plug do
     } = endpoint_urls(endpoint)
 
     {url, static_url, router_host, router_origin, static_host} =
-      if endpoint_host == "localhost" and static_host == "localhost" do
-        uri = %{endpoint_uri | host: conn.host}
+      if endpoint_host == "localhost" and static_host == "localhost" and request_host?(conn.host) do
+        # URI adds the brackets of an IPv6 literal itself.
+        uri = %{endpoint_uri | host: conn.host |> String.trim_leading("[") |> String.trim_trailing("]")}
         url = URI.to_string(uri)
         {url, url, conn.host, origin(uri), conn.host}
       else
@@ -244,7 +258,7 @@ defmodule PhoenixAssetPipeline.Plug do
       static_url,
       link,
       ?>,
-      early_hint_attrs(attrs)
+      Enum.map(attrs, &early_hint_attr/1)
     ]
   end
 
@@ -262,39 +276,63 @@ defmodule PhoenixAssetPipeline.Plug do
     append_configured_early_hint(acc, link, static_url)
   end
 
-  defp append_early_hints([script | rest], static_url, acc) do
-    %{path: path, integrity: integrity} = Manifest.find(:script_tags, script)
+  defp append_early_hints([script | rest], endpoint, static_url, acc) do
+    %{path: path, integrity: integrity} = Helpers.script_tag!(script)
 
-    append_early_hints(rest, static_url, [
+    append_early_hints(rest, endpoint, static_url, [
       acc,
       @early_hints_preload_prefix,
       static_url,
-      path,
-      ">; rel=preload; as=script; crossorigin; integrity=\"",
+      endpoint.static_path(path),
+      ">; rel=modulepreload; crossorigin; integrity=\"",
       integrity,
       ?"
     ])
   end
 
-  defp append_early_hints([], _, acc), do: acc
+  defp append_early_hints([], _, _, acc), do: acc
 
-  defp cached_early_hints(endpoint, static_url, scripts, links) do
-    key = {__MODULE__, :early_hints, endpoint, scripts}
-    fingerprint = {Manifest.get(:digest), static_url, links}
+  defp build_content_security_policy(static_url, directives) do
+    IO.iodata_to_binary([
+      @content_security_policy_before_img_src,
+      static_url,
+      @content_security_policy_before_script_src,
+      csp_values(:maps.get("script-src", directives, [])),
+      csp_style_src(:maps.get("style-src", directives, [])),
+      @content_security_policy_trusted_types
+    ])
+  end
 
-    case :persistent_term.get(key, @header_cache_missing) do
-      {^fingerprint, link} ->
-        link
+  defp build_early_hints(endpoint, static_url, scripts) do
+    scripts
+    |> append_early_hints(endpoint, static_url, ["<", static_url, @early_hints_preconnect_suffix])
+    |> IO.iodata_to_binary()
+  end
 
-      _ ->
-        link =
-          scripts
-          |> append_early_hints(static_url, ["<", static_url, @early_hints_preconnect_suffix])
-          |> append_configured_early_hints(links, static_url)
-          |> IO.iodata_to_binary()
+  defp cached_early_hints(endpoint, static_url, scripts) do
+    cached_header(
+      endpoint,
+      static_url,
+      {__MODULE__, :early_hints, endpoint, scripts},
+      {Manifest.get(:digest), static_url, endpoint.static_path("/")},
+      fn -> build_early_hints(endpoint, static_url, scripts) end
+    )
+  end
 
-        :persistent_term.put(key, {fingerprint, link})
-        link
+  # A URL mirrored from the request host is not cached: every new host would replace the term.
+  defp cached_header(endpoint, static_url, key, fingerprint, build) do
+    if static_url == endpoint.static_url() do
+      case :persistent_term.get(key, @header_cache_missing) do
+        {^fingerprint, value} ->
+          value
+
+        _ ->
+          value = build.()
+          :persistent_term.put(key, {fingerprint, value})
+          value
+      end
+    else
+      build.()
     end
   end
 
@@ -339,31 +377,30 @@ defmodule PhoenixAssetPipeline.Plug do
   defp early_hint_attr({name, true}), do: ["; ", to_string(name)]
   defp early_hint_attr({name, value}), do: ["; ", to_string(name), "=", to_string(value)]
 
-  defp early_hint_attrs(attrs), do: Enum.map(attrs, &early_hint_attr/1)
-
+  # The cache follows the endpoint configuration, which can change in a running node.
   defp endpoint_urls(endpoint) do
     key = {__MODULE__, :endpoint_urls, endpoint}
+    static_url = endpoint.static_url()
+    url = endpoint.url()
 
     case :persistent_term.get(key, @endpoint_urls_missing) do
-      @endpoint_urls_missing ->
-        static_url = endpoint.static_url()
-        url = endpoint.url()
+      %{static_url: ^static_url, url: ^url} = urls ->
+        urls
+
+      _ ->
         router_uri = URI.parse(url)
 
         urls = %{
           endpoint_host: endpoint.host(),
           endpoint_uri: endpoint.struct_url(),
-          router_host: router_uri.host,
+          router_host: String.downcase(router_uri.host),
           router_origin: origin(router_uri),
-          static_host: URI.parse(static_url).host,
+          static_host: String.downcase(URI.parse(static_url).host),
           static_url: static_url,
           url: url
         }
 
         :persistent_term.put(key, urls)
-        urls
-
-      urls ->
         urls
     end
   end
@@ -407,28 +444,22 @@ defmodule PhoenixAssetPipeline.Plug do
     put_resp_header(conn, "content-security-policy", value)
   end
 
+  # Only DNS names and IP literals are mirrored into URLs and response headers.
+  defp request_host?(<<byte, rest::binary>>)
+       when byte in ?a..?z or byte in ?A..?Z or byte in ?0..?9 or byte in [?., ?-, ?:, ?[, ?]] do
+    request_host?(rest)
+  end
+
+  defp request_host?(host), do: host == ""
+
   defp standard_content_security_policy(endpoint, static_url, directives) do
-    key = {__MODULE__, :content_security_policy, endpoint}
-    fingerprint = {static_url, directives, @content_security_policy}
-
-    case :persistent_term.get(key, @header_cache_missing) do
-      {^fingerprint, value} ->
-        value
-
-      _ ->
-        value =
-          IO.iodata_to_binary([
-            @content_security_policy_before_img_src,
-            static_url,
-            @content_security_policy_before_script_src,
-            csp_values(:maps.get("script-src", directives, [])),
-            csp_style_src(:maps.get("style-src", directives, [])),
-            @content_security_policy_trusted_types
-          ])
-
-        :persistent_term.put(key, {fingerprint, value})
-        value
-    end
+    cached_header(
+      endpoint,
+      static_url,
+      {__MODULE__, :content_security_policy, endpoint},
+      {static_url, directives, @content_security_policy},
+      fn -> build_content_security_policy(static_url, directives) end
+    )
   end
 
   defp status_skipped?(%Range{} = range, status), do: status in range

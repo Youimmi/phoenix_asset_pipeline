@@ -105,9 +105,9 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
   const buildJs = async (jsEntries) => {
     const checked = Bun.spawnSync({
-      cmd: [process.execPath, "--no-orphans", "check", "--listFiles", "--no-pretty", "--allowJs", ...jsEntries],
+      // --no-script runs the type checker even when package.json defines a check script.
+      cmd: [process.execPath, "--no-orphans", "check", "--no-script", "--listFiles", "--no-pretty", "--allowJs", ...jsEntries],
       cwd: assetsDir,
-      env: { ...process.env, npm_lifecycle_event: "check" },
       stdout: "pipe",
       stderr: "pipe"
     });
@@ -201,9 +201,14 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       dependencies.add(inputPath);
     }
 
+    // Only source inputs make their directories dependencies.
     for (const inputPath of dependencies) {
       directories.add(path.dirname(inputPath));
       if (path.basename(inputPath).startsWith("index.")) directories.add(path.dirname(path.dirname(inputPath)));
+    }
+
+    // The live set also visits package and config files added here, including extended configs.
+    for (const inputPath of dependencies) {
       await addPackages(path.dirname(inputPath));
 
       const configPath = await findConfig(path.dirname(inputPath));
@@ -535,55 +540,71 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   @path_delimiter if(match?({:win32, _}, :os.type()), do: ";", else: ":")
   @script_fingerprint :crypto.hash(:sha256, @script)
 
-  def build(assets_dir, sprite_sources), do: build(assets_dir, sprite_sources, nil, nil)
-
-  @doc false
   def build(assets_dir, sprite_sources, asset_terms, colocated_terms) do
     js_entries = asset_entries(assets_dir, "js", @entry_exts)
     css_entries = asset_entries(assets_dir, "css", [@css_ext])
 
     svg_signature =
-      if is_list(asset_terms),
-        do: source_terms_signature(asset_terms, "svg/", [".svg"]),
-        else: source_signature(Path.join(assets_dir, "svg"), [".svg"])
+      for {_, "svg/" <> _ = path, _} = term <- asset_terms, String.downcase(Path.extname(path)) == ".svg", do: term
 
     if js_entries == [] and css_entries == [] and svg_signature == [] and sprite_sources == [] do
       []
     else
       ensure_package_json!(assets_dir)
       bun_fingerprint = BunRuntime.ensure_fingerprint!()
+      install_signature = ensure_dependencies(assets_dir, bun_fingerprint)
+      build_fingerprint = build_fingerprint(bun_fingerprint, assets_dir)
+      source_cache = Cache.read_map(output_cache_path(), build_fingerprint)
+      source_digests = source_digest_map(assets_dir, asset_terms, colocated_terms)
+      js_key = cache_key(:js, js_entries, install_signature)
+      css_key = cache_key(:css, css_entries, install_signature)
+      svg_key = svg_cache_key(sprite_sources, install_signature, svg_signature)
 
-      build_cached(
-        assets_dir,
-        js_entries,
-        css_entries,
-        sprite_sources,
-        svg_signature,
-        bun_fingerprint,
-        asset_terms,
-        colocated_terms
-      )
+      {js_assets, js_dependencies, build_js?} = cached_assets(source_cache, js_key, source_digests)
+      {css_assets, css_dependencies, build_css?} = cached_assets(source_cache, css_key, source_digests)
+      {svg_assets, _, build_svg?} = cached_assets(source_cache, svg_key, source_digests)
+
+      built_assets =
+        build_missing_assets(
+          {assets_dir, js_entries, css_entries, sprite_sources},
+          {build_js?, build_css?, build_svg?},
+          {js_dependencies, css_dependencies},
+          3
+        )
+
+      js_assets = select(build_js?, built_assets.js, js_assets)
+      js_dependencies = select(build_js?, built_assets.js_dependencies, js_dependencies)
+      css_assets = select(build_css?, built_assets.css, css_assets)
+      css_dependencies = select(build_css?, built_assets.css_dependencies, css_dependencies)
+      svg_assets = select(build_svg?, built_assets.svg, svg_assets)
+
+      cache =
+        %{}
+        |> put_cached_assets(js_key, js_dependencies, js_assets)
+        |> put_cached_assets(css_key, css_dependencies, css_assets)
+        |> put_cached_assets(svg_key, [], svg_assets)
+
+      save_output_cache(cache, source_cache, build_fingerprint)
+
+      js_assets ++ css_assets ++ svg_assets
     end
   end
 
-  @doc false
   def fingerprint(assets_dir, asset_terms, colocated_terms) do
     fingerprint = build_fingerprint(BunRuntime.fingerprint(), assets_dir)
 
     dependencies =
-      fingerprint
-      |> read_output_cache()
+      output_cache_path()
+      |> Cache.read_map(fingerprint)
       |> cached_dependencies()
       |> dependency_signature(assets_dir, asset_terms, colocated_terms)
 
     {fingerprint, dependency_sources_signature(assets_dir), dependencies}
   end
 
-  @doc false
-  def watch_sources(assets_dir \\ Config.assets_dir()) do
-    BunRuntime.fingerprint()
-    |> build_fingerprint(assets_dir)
-    |> read_output_cache()
+  def watch_sources(assets_dir) do
+    output_cache_path()
+    |> Cache.read_map(build_fingerprint(BunRuntime.fingerprint(), assets_dir))
     |> cached_dependencies()
     |> Enum.reduce({[], []}, fn
       {{:directory, path}, _}, {dirs, files} -> {[watch_dir(path) | dirs], files}
@@ -599,61 +620,13 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     |> Enum.map(&Files.relative_path(&1, assets_dir))
   end
 
-  defp build_cached(
-         assets_dir,
-         js_entries,
-         css_entries,
-         sprite_sources,
-         svg_signature,
-         bun_fingerprint,
-         asset_terms,
-         colocated_terms
-       ) do
-    install_signature = ensure_dependencies(assets_dir, bun_fingerprint)
-    build_fingerprint = build_fingerprint(bun_fingerprint, assets_dir)
-    source_cache = read_output_cache(build_fingerprint)
-
-    source_digests = source_digest_map(assets_dir, asset_terms, colocated_terms)
-    js_key = cache_key(:js, js_entries, install_signature)
-    css_key = cache_key(:css, css_entries, install_signature)
-
-    svg_key = svg_cache_key(sprite_sources, install_signature, svg_signature)
-
-    {js_assets, js_dependencies, build_js?} = cached_assets(source_cache, js_key, source_digests)
-    {css_assets, css_dependencies, build_css?} = cached_assets(source_cache, css_key, source_digests)
-    {svg_assets, _, build_svg?} = cached_assets(source_cache, svg_key, source_digests)
-
-    built_assets =
-      build_missing_assets(
-        {assets_dir, js_entries, css_entries, sprite_sources},
-        {build_js?, build_css?, build_svg?},
-        {js_dependencies, css_dependencies},
-        3
-      )
-
-    js_assets = select_assets(build_js?, built_assets.js, js_assets)
-    js_dependencies = select_assets(build_js?, built_assets.js_dependencies, js_dependencies)
-    css_assets = select_assets(build_css?, built_assets.css, css_assets)
-    css_dependencies = select_assets(build_css?, built_assets.css_dependencies, css_dependencies)
-    svg_assets = select_assets(build_svg?, built_assets.svg, svg_assets)
-
-    cache =
-      %{}
-      |> put_cached_assets(js_key, js_dependencies, js_assets)
-      |> put_cached_assets(css_key, css_dependencies, css_assets)
-      |> put_cached_assets(svg_key, [], svg_assets)
-
-    save_output_cache(cache, source_cache, build_fingerprint)
-
-    js_assets ++ css_assets ++ svg_assets
-  end
-
   defp build_fingerprint(bun_fingerprint, assets_dir) do
-    {Path.expand(assets_dir), @script_fingerprint, @asset_mode, @node_env, Config.js_drop(), node_path(), bun_fingerprint}
+    {assets_dir, @script_fingerprint, @asset_mode, @node_env, Config.js_drop(), node_path(), bun_fingerprint}
   end
 
-  defp build_missing_assets(_, {false, false, false}, _, _),
-    do: %{css: [], css_dependencies: [], js: [], js_dependencies: [], svg: []}
+  defp build_missing_assets(_, {false, false, false}, _, _) do
+    %{css: [], css_dependencies: [], js: [], js_dependencies: [], svg: []}
+  end
 
   defp build_missing_assets(_, _, _, 0), do: raise("asset dependencies changed repeatedly during build")
 
@@ -663,19 +636,17 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
          {js_dependencies, css_dependencies},
          attempts
        ) do
-    js_before = Map.new(select_entries(build_js?, js_dependencies), fn {path, _} -> {path, source_digest(path, nil)} end)
-
-    css_before =
-      Map.new(select_entries(build_css?, css_dependencies), fn {path, _} -> {path, source_digest(path, nil)} end)
+    js_before = Map.new(select(build_js?, js_dependencies, []), fn {path, _} -> {path, source_digest(path, nil)} end)
+    css_before = Map.new(select(build_css?, css_dependencies, []), fn {path, _} -> {path, source_digest(path, nil)} end)
 
     assets =
       run(
         assets_dir,
-        select_entries(build_js?, js_entries),
-        select_entries(build_css?, css_entries),
-        select_entries(build_svg?, sprite_sources),
+        select(build_js?, js_entries, []),
+        select(build_css?, css_entries, []),
+        select(build_svg?, sprite_sources, []),
         build_svg?,
-        select_entries(build_js?, js_drop())
+        select(build_js?, Config.js_drop(), [])
       )
 
     assets = %{
@@ -698,10 +669,10 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
       %{
         assets
-        | js: select_assets(retry_js?, retry.js, assets.js),
-          js_dependencies: select_assets(retry_js?, retry.js_dependencies, assets.js_dependencies),
-          css: select_assets(retry_css?, retry.css, assets.css),
-          css_dependencies: select_assets(retry_css?, retry.css_dependencies, assets.css_dependencies)
+        | js: select(retry_js?, retry.js, assets.js),
+          js_dependencies: select(retry_js?, retry.js_dependencies, assets.js_dependencies),
+          css: select(retry_css?, retry.css, assets.css),
+          css_dependencies: select(retry_css?, retry.css_dependencies, assets.css_dependencies)
       }
     else
       assets
@@ -771,12 +742,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   end
 
   defp dependency_sources_signature(assets_dir) do
-    assets_dir = Path.expand(assets_dir)
-
-    [
-      {"package.json", file_digest(Path.join(assets_dir, "package.json"))},
-      {"bun.lock", file_digest(Path.join(assets_dir, "bun.lock"))}
-    ]
+    for file <- ["package.json", "bun.lock"], do: {file, Digest.file(Path.join(assets_dir, file))}
   end
 
   defp directory_entry(path, file) do
@@ -786,26 +752,28 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
   defp ensure_dependencies(assets_dir, bun_fingerprint) do
     :global.trans(
-      {{@install_lock, Path.expand(assets_dir)}, self()},
+      {{@install_lock, assets_dir}, self()},
       fn ->
         signature = install_signature(assets_dir, bun_fingerprint)
-        ensure_dependencies_unlocked(assets_dir, signature, bun_fingerprint)
+
+        if File.dir?(Path.join(assets_dir, "node_modules")) and
+             Cache.read_term(install_cache_path(), nil, &{:ok, &1}) == {assets_dir, signature} do
+          signature
+        else
+          install_dependencies!(assets_dir, bun_fingerprint, signature)
+        end
       end,
       [node()],
       :infinity
     )
   end
 
-  defp ensure_dependencies_unlocked(assets_dir, signature, bun_fingerprint) do
-    install_dependencies(assets_dir, signature, bun_fingerprint, install_required?(assets_dir, signature))
-  end
-
   defp ensure_package_json!(assets_dir) do
-    if !File.regular?(Path.join(assets_dir, "package.json")) do
+    if not File.regular?(Path.join(assets_dir, "package.json")) do
       raise "missing assets/package.json for PhoenixAssetPipeline Bun asset builds"
     end
 
-    if @asset_mode == :prod and !File.regular?(Path.join(assets_dir, "bun.lock")) do
+    if @asset_mode == :prod and not File.regular?(Path.join(assets_dir, "bun.lock")) do
       raise "missing assets/bun.lock for production PhoenixAssetPipeline builds"
     end
   end
@@ -846,56 +814,41 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       Path.extname(path) in exts
   end
 
-  defp file_digest(path) do
-    case File.read(path) do
-      {:ok, content} -> Digest.binary(content)
-      {:error, :enoent} -> :missing
-      {:error, reason} -> raise File.Error, reason: reason, action: "read file", path: path
-    end
-  end
-
   defp install_cache_path do
     Path.join(Config.manifest_cache_dir(), @install_cache_file)
   end
 
-  defp install_cache_record(assets_dir, signature), do: {Path.expand(assets_dir), signature}
+  defp install_dependencies!(assets_dir, bun_fingerprint, signature, attempts \\ 3)
 
-  defp install_dependencies(_, signature, _, false), do: signature
-
-  defp install_dependencies(assets_dir, _, bun_fingerprint, true) do
-    :ok = run_bun_install(assets_dir, @install_args)
-    signature = install_signature(assets_dir, bun_fingerprint)
-    save_install_cache(assets_dir, signature)
-    signature
+  defp install_dependencies!(_, _, _, 0) do
+    raise("assets/package.json or bun.lock changed repeatedly during bun install")
   end
 
-  defp install_required?(assets_dir, signature) do
-    not File.dir?(Path.join(assets_dir, "node_modules")) or
-      read_install_cache() != {:ok, {Path.expand(assets_dir), signature}}
+  defp install_dependencies!(assets_dir, bun_fingerprint, signature, attempts) do
+    # An interrupted install can recreate node_modules, so the old marker must not survive it.
+    _ = File.rm(install_cache_path())
+    :ok = run_bun_install(assets_dir)
+    installed = install_signature(assets_dir, bun_fingerprint)
+
+    # Inputs changed during the install, including a bun.lock that Bun rewrote, are installed again
+    # before any build uses them; a rewrite settles on the next pass.
+    if installed == signature do
+      Cache.write_term!(install_cache_path(), {assets_dir, installed})
+      installed
+    else
+      install_dependencies!(assets_dir, bun_fingerprint, installed, attempts - 1)
+    end
   end
 
   defp install_signature(assets_dir, bun_fingerprint) do
     [{:bun, bun_fingerprint} | dependency_sources_signature(assets_dir)]
   end
 
-  defp js_drop, do: Config.js_drop()
-
-  defp mix_deps_path do
-    if Code.ensure_loaded?(Mix.Project) do
-      config = Mix.Project.config()
-      if config[:app], do: Mix.Project.deps_path(config)
-    end
-  rescue
-    _ -> nil
-  catch
-    :exit, _ -> nil
-  end
-
   defp node_path do
     [
       System.get_env("NODE_PATH"),
       Config.build_path(),
-      mix_deps_path() || Path.join(Config.project_dir(), "deps")
+      Config.mix_project(&Mix.Project.deps_path/1) || Path.join(Config.project_dir(), "deps")
     ]
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join(@path_delimiter)
@@ -916,19 +869,25 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   defp output_group!(_), do: raise("bun asset build returned an invalid output group")
 
   defp output_path!(output_dir, output_name) do
-    case Integer.parse(output_name) do
-      {index, ""} when index >= 0 ->
-        if Integer.to_string(index) == output_name,
-          do: Path.join(output_dir, output_name),
-          else: raise("bun asset build returned an invalid output reference")
-
-      _ ->
-        raise "bun asset build returned an invalid output reference"
-    end
+    if output_name =~ ~r/\A(?:0|[1-9]\d*)\z/,
+      do: Path.join(output_dir, output_name),
+      else: raise("bun asset build returned an invalid output reference")
   end
 
   defp parse_output(output, output_dir) do
-    assets = parse_output(output, output_dir, %{css: [], css_dependencies: [], js: [], js_dependencies: [], svg: []})
+    assets =
+      output
+      |> :binary.split("\n", [:global, :trim])
+      |> Enum.reduce(%{css: [], css_dependencies: [], js: [], js_dependencies: [], svg: []}, fn line, assets ->
+        case :binary.split(line, "\t", [:global]) do
+          [kind, source, group] when kind in ["dependency", "directory", "glob"] ->
+            Map.update!(assets, dependency_group!(group), &[dependency_source!(kind, source) | &1])
+
+          [group, path, output_name] ->
+            asset = {Base.decode64!(path), File.read!(output_path!(output_dir, output_name))}
+            Map.update!(assets, output_group!(group), &[asset | &1])
+        end
+      end)
 
     %{
       css: Enum.sort(assets.css),
@@ -939,39 +898,8 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     }
   end
 
-  defp parse_output("", _, assets), do: assets
-
-  defp parse_output(output, output_dir, assets) do
-    {line, rest} = take_output_line(output)
-    [group, path, output_name] = :binary.split(line, "\t", [:global])
-
-    if group in ["dependency", "directory", "glob"] do
-      dependency = dependency_source!(group, path)
-      group = dependency_group!(output_name)
-      parse_output(rest, output_dir, Map.update!(assets, group, &[dependency | &1]))
-    else
-      group = output_group!(group)
-      asset = {Base.decode64!(path), File.read!(output_path!(output_dir, output_name))}
-      parse_output(rest, output_dir, Map.update!(assets, group, &[asset | &1]))
-    end
-  end
-
   defp put_cached_assets(cache, nil, _, _), do: cache
   defp put_cached_assets(cache, key, dependencies, assets), do: Map.put(cache, key, {dependencies, assets})
-
-  defp read_install_cache do
-    Cache.read_term(install_cache_path(), :error, fn
-      {assets_dir, signature} when is_binary(assets_dir) and is_list(signature) -> {:ok, {:ok, {assets_dir, signature}}}
-      _ -> :error
-    end)
-  end
-
-  defp read_output_cache(fingerprint) do
-    Cache.read_term(output_cache_path(), %{}, fn
-      {^fingerprint, cache} when is_map(cache) -> {:ok, cache}
-      _ -> :error
-    end)
-  end
 
   defp run(assets_dir, js_entries, css_entries, sprite_sources, svg?, js_drop) do
     output_dir = output_dir()
@@ -991,7 +919,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     File.mkdir!(output_dir)
 
     try do
-      case run_bun(["--eval", @script], cd: assets_dir, env: env) do
+      case BunRuntime.run_ready(["--eval", @script], cd: assets_dir, env: env) do
         {output, 0} -> parse_output(output, output_dir)
         {output, status} -> raise "bun asset build exited with #{status}\n#{output}"
       end
@@ -1000,12 +928,8 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     end
   end
 
-  defp run_bun(args, opts) do
-    BunRuntime.run_ready(args, opts)
-  end
-
-  defp run_bun_install(assets_dir, args) do
-    case run_bun(args, cd: assets_dir, stderr_to_stdout: true) do
+  defp run_bun_install(assets_dir) do
+    case BunRuntime.run_ready(@install_args, cd: assets_dir, stderr_to_stdout: true) do
       {output, 0} ->
         IO.write(output)
         :ok
@@ -1015,21 +939,14 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     end
   end
 
-  defp save_install_cache(assets_dir, signature) do
-    Cache.write_term!(install_cache_path(), install_cache_record(assets_dir, signature))
-  end
-
   defp save_output_cache(cache, cache, _), do: :ok
 
   defp save_output_cache(cache, _, fingerprint) do
     Cache.write_term!(output_cache_path(), {fingerprint, cache})
   end
 
-  defp select_assets(true, built, _), do: built
-  defp select_assets(false, _, cached), do: cached
-
-  defp select_entries(true, entries), do: entries
-  defp select_entries(false, _), do: []
+  defp select(true, built, _), do: built
+  defp select(false, _, cached), do: cached
 
   defp source_digest({:directory, path}, _) do
     case File.ls(path) do
@@ -1052,18 +969,18 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     |> Path.join(pattern)
     |> Path.wildcard(match_dot: true)
     |> Enum.map(fn path ->
-      if Path.basename(path) == ".gitignore" and File.regular?(path), do: {path, file_digest(path)}, else: path
+      if Path.basename(path) == ".gitignore" and File.regular?(path), do: {path, Digest.file(path)}, else: path
     end)
     |> Digest.term()
   end
 
-  defp source_digest(path, nil), do: file_digest(path)
+  defp source_digest(path, nil), do: Digest.file(path)
 
   defp source_digest(path, {assets_dir, asset_digests, build_path, colocated_digests}) do
     case source_digest(path, assets_dir, asset_digests) do
       :error ->
         case source_digest(path, build_path, colocated_digests) do
-          :error -> file_digest(path)
+          :error -> Digest.file(path)
           {:ok, digest} -> digest
         end
 
@@ -1079,41 +996,11 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
   defp source_digest_map(assets_dir, asset_terms, colocated_terms) do
     {
-      Path.expand(assets_dir),
-      source_term_digest_map(asset_terms),
+      assets_dir,
+      Map.new(asset_terms, &{elem(&1, 1), elem(&1, 2)}),
       Config.build_path(),
-      source_term_digest_map(colocated_terms)
+      Map.new(colocated_terms, &{elem(&1, 1), elem(&1, 2)})
     }
-  end
-
-  defp source_signature(dir, exts) do
-    dir
-    |> Files.regular_files()
-    |> Enum.filter(&(String.downcase(Path.extname(&1)) in exts))
-    |> Enum.map(&{Files.relative_path(&1, dir), file_digest(&1)})
-  end
-
-  defp source_term_digest_map(terms) when is_list(terms) do
-    Map.new(terms, &source_term_digest_pair/1)
-  end
-
-  defp source_term_digest_map(_), do: %{}
-
-  defp source_term_digest_pair({_, path, digest}), do: {path, digest}
-  defp source_term_digest_pair({_, path, digest, _}), do: {path, digest}
-
-  defp source_terms_signature(terms, prefix, exts) do
-    terms
-    |> Enum.reduce([], fn
-      {_, path, _} = term, signature ->
-        if String.starts_with?(path, prefix) and String.downcase(Path.extname(path)) in exts,
-          do: [term | signature],
-          else: signature
-
-      _, signature ->
-        signature
-    end)
-    |> :lists.reverse()
   end
 
   defp sprite_source_env(sprite_sources) do
@@ -1134,17 +1021,6 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
   defp svg_cache_key(sprite_sources, install_signature, svg_signature) do
     {:svg, install_signature, svg_signature, Sprites.signature(sprite_sources)}
-  end
-
-  defp take_output_line(output) do
-    case :binary.match(output, "\n") do
-      {index, 1} ->
-        line = binary_part(output, 0, index)
-        {line, binary_part(output, index + 1, byte_size(output) - index - 1)}
-
-      :nomatch ->
-        {output, ""}
-    end
   end
 
   defp watch_dir(path) do

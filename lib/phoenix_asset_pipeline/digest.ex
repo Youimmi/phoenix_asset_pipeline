@@ -3,6 +3,14 @@ defmodule PhoenixAssetPipeline.Digest do
 
   def binary(data), do: :crypto.hash(:sha256, data)
 
+  def file(path) do
+    case File.read(path) do
+      {:ok, content} -> binary(content)
+      {:error, :enoent} -> :missing
+      {:error, reason} -> raise File.Error, reason: reason, action: "read file", path: path
+    end
+  end
+
   def hex(data) do
     data
     |> binary()
