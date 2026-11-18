@@ -101,7 +101,6 @@ defmodule PhoenixAssetPipeline.Config do
 
   def manifest_cache_dir, do: Path.join(build_path(), "phoenix_asset_pipeline")
 
-  # Applies `fun` to the current Mix project config; `nil` outside a Mix project.
   def mix_project(fun) when is_function(fun, 1) do
     if Code.ensure_loaded?(Mix.Project) do
       config = Mix.Project.config()
@@ -115,7 +114,7 @@ defmodule PhoenixAssetPipeline.Config do
 
   def otp_app, do: @otp_app
   def precompiled_manifest?, do: @precompiled_manifest
-  def project_dir(assets_dir \\ @assets_dir), do: assets_dir |> Path.expand() |> Path.dirname()
+  def project_dir, do: project_dir(Path.dirname(assets_dir()))
   def public_css_variables, do: @public_css_variables
   def static_dir, do: Path.expand(@static_dir)
   def svg_sprites, do: @svg_sprites
@@ -137,5 +136,13 @@ defmodule PhoenixAssetPipeline.Config do
     _ -> :prod
   catch
     :exit, _ -> :prod
+  end
+
+  defp project_dir(dir) do
+    cond do
+      File.regular?(Path.join(dir, "mix.exs")) -> dir
+      Path.dirname(dir) == dir -> raise ArgumentError, "no mix.exs above the assets directory #{assets_dir()}"
+      true -> project_dir(Path.dirname(dir))
+    end
   end
 end

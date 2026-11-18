@@ -3,7 +3,7 @@ defmodule PhoenixAssetPipeline.MixProject do
 
   @minimum_otp_release 29
   @source_url "https://github.com/Youimmi/phoenix_asset_pipeline"
-  @version "6.0.0"
+  @version "7.0.0"
 
   if String.to_integer(System.otp_release()) < @minimum_otp_release do
     raise("Requires Erlang/OTP #{@minimum_otp_release} or later")
@@ -44,7 +44,7 @@ defmodule PhoenixAssetPipeline.MixProject do
         "compile --warnings-as-errors",
         "credo --strict",
         "cmd cargo fmt --all -- --check",
-        "format --check-formatted --dry-run",
+        "format --check-formatted",
         "deps.unlock --unused",
         "format"
       ],

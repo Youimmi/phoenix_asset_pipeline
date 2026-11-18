@@ -11,6 +11,7 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     required reversed selected
   ))
 
+  @keep_comments Application.compile_env(:phoenix_live_view, :debug_heex_annotations, false)
   # Elements that may appear before <body>; any other element or text starts the body implicitly.
   @head_content_tags MapSet.new(~w(base basefont bgsound head html link meta noframes script style template title))
   # Whitespace-only text is not rendered at the document level or directly inside these elements.
@@ -20,7 +21,13 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   @doc false
   def minify_rendered_static(ast) do
-    Macro.postwalk(ast, &minify_static_node/1)
+    {ast, []} =
+      Macro.traverse(ast, [], &{&1, [false | &2]}, fn node, [descendants_changed? | stack] ->
+        {node, changed?} = minify_static_node(node, descendants_changed?)
+        {node, if(changed? and stack != [], do: [true | tl(stack)], else: stack)}
+      end)
+
+    ast
   end
 
   @doc false
@@ -111,7 +118,6 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp boolean_attr?(name), do: MapSet.member?(@boolean_attrs, String.downcase(name, :ascii))
 
-  # Closing an element opened before the fragment leaves the container unknown.
   defp close_container([name | containers], name), do: containers
   defp close_container([:unknown] = containers, _), do: containers
   defp close_container([], _), do: [:unknown]
@@ -210,8 +216,6 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp digit_value(byte, 16) when byte in ?A..?F, do: byte - ?A + 10
   defp digit_value(_, _), do: :error
 
-  # Containers carry over between fragments only across dynamic attribute values and raw text,
-  # which cannot change them.
   defp drop_unrendered_fragment_whitespace([static | statics], [:text | contexts], containers, acc) do
     {static, tail} = split_dynamic_whitespace(static, contexts)
     {html, containers} = drop_unrendered_whitespace(static, containers)
@@ -232,7 +236,6 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     end
   end
 
-  # The fragment continues the open tag `name`, possibly inside a quoted attribute value.
   defp drop_unrendered_fragment_whitespace([static | statics], [{name, quote} | contexts], containers, acc) do
     case tag_rest(static, quote) do
       {content, rest} ->
@@ -581,7 +584,6 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     end
   end
 
-  # Returns the minified statics and the context each one starts in.
   defp minify_heex_static_list([static | rest], acc, contexts, context) do
     minified = minify_heex_static(static, context)
     minify_heex_static_list(rest, [minified | acc], [context | contexts], heex_context(static, context))
@@ -684,7 +686,6 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
         minify_html(rest, [closing_tag, raw_text | acc])
 
-      # The element continues past this fragment, so its raw text is kept as written.
       :error ->
         :lists.reverse([rest | acc])
     end
@@ -698,47 +699,43 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     |> interleave_safe_iodata_parts(dynamics)
   end
 
-  defp minify_static_fields(fields) do
-    minify_static_fields(fields, fields, [], nil)
-  end
+  defp minify_static_fields(fields, descendants_changed?) do
+    static = Keyword.get(fields, :static)
 
-  defp minify_static_fields([{:static, [_ | _] = static} | rest], original, acc, nil) do
-    if binary_list?(static) do
-      minify_static_fields(rest, original, acc, minify_heex_statics(static))
+    minified =
+      if is_list(static) and static != [] and binary_list?(static), do: minify_heex_statics(static), else: static
+
+    if minified != static or descendants_changed? do
+      {Enum.map(fields, fn
+         {:static, _} -> {:static, minified}
+         field -> refingerprint(field, minified)
+       end), true}
     else
-      original
+      {fields, false}
     end
   end
 
-  defp minify_static_fields([{:static, _} | _], original, _, nil), do: original
-
-  defp minify_static_fields([{:static, _} | rest], original, acc, static) do
-    minify_static_fields(rest, original, acc, static)
-  end
-
-  defp minify_static_fields([field | rest], original, acc, static) do
-    minify_static_fields(rest, original, [field | acc], static)
-  end
-
-  defp minify_static_fields([], original, _, nil), do: original
-
-  defp minify_static_fields([], _, acc, static) do
-    [{:static, static} | :lists.reverse(acc)]
-  end
-
-  defp minify_static_node({:%, struct_meta, [module, {:%{}, map_meta, fields}]} = node) do
+  defp minify_static_node({:%, struct_meta, [module, {:%{}, map_meta, fields}]} = node, descendants_changed?) do
     if live_view_rendered_struct?(module) do
-      {:%, struct_meta, [module, {:%{}, map_meta, minify_static_fields(fields)}]}
+      {fields, changed?} = minify_static_fields(fields, descendants_changed?)
+      {{:%, struct_meta, [module, {:%{}, map_meta, fields}]}, changed?}
     else
-      node
+      {node, descendants_changed?}
     end
   end
 
-  defp minify_static_node({:safe, parts}) when is_list(parts) do
-    {:safe, minify_safe_iodata_parts(parts)}
+  defp minify_static_node({:__block__, [live_rendered: true] ++ _ = meta, exprs} = node, descendants_changed?) do
+    case Enum.split(exprs, -1) do
+      {dynamic, [{:safe, parts}]} when is_list(parts) ->
+        minified = minify_safe_iodata_parts(parts)
+        {{:__block__, meta, dynamic ++ [{:safe, minified}]}, descendants_changed? or minified != parts}
+
+      _ ->
+        {node, descendants_changed?}
+    end
   end
 
-  defp minify_static_node(node), do: node
+  defp minify_static_node(node, descendants_changed?), do: {node, descendants_changed?}
 
   defp minify_tag(content) do
     content
@@ -767,7 +764,6 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp minify_trimmed_tag(content), do: minify_opening_tag(content)
 
-  # Text-level dynamic parts may hold any markup, even unbalanced safe HTML.
   defp next_containers(_, [:text | _]), do: [:unknown]
   defp next_containers(containers, _), do: containers
 
@@ -876,6 +872,13 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
     if not self_closing? and RawText.tag?(name), do: name
   end
 
+  defp refingerprint({:fingerprint, fingerprint}, static) when is_integer(fingerprint) do
+    <<fingerprint::128>> = :erlang.md5(:erlang.term_to_binary({fingerprint, static}))
+    {:fingerprint, fingerprint}
+  end
+
+  defp refingerprint(field, _), do: field
+
   defp self_closing_slash?(_, 1), do: true
 
   defp self_closing_slash?(content, size) do
@@ -914,13 +917,6 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
 
   defp skip_ascii_whitespace_index(_, index, _), do: index
 
-  defp special_comment?(content), do: special_comment_content?(skip_ascii_whitespace(content))
-
-  defp special_comment_content?(<<"[if", _::binary>>), do: true
-  defp special_comment_content?(<<"<![endif", _::binary>>), do: true
-  defp special_comment_content?(_), do: false
-
-  # Whitespace before a text-level dynamic part may end up next to its text, so it is kept.
   defp split_dynamic_whitespace(html, [:text | _]) do
     trimmed = trim_ascii_trailing(html)
     {trimmed, binary_part(html, byte_size(trimmed), byte_size(html) - byte_size(trimmed))}
@@ -1004,14 +1000,11 @@ defmodule PhoenixAssetPipeline.HTML.Minifier do
   defp take_comment(rest) do
     case :binary.match(rest, "-->") do
       {index, 3} ->
-        content = binary_part(rest, 0, index)
-        rest = binary_part(rest, index + 3, byte_size(rest) - index - 3)
+        tail = binary_part(rest, index + 3, byte_size(rest) - index - 3)
 
-        if special_comment?(content) do
-          {:keep, ["<!--", content, "-->"], rest}
-        else
-          {:remove, rest}
-        end
+        if @keep_comments,
+          do: {:keep, ["<!--", binary_part(rest, 0, index), "-->"], tail},
+          else: {:remove, tail}
 
       :nomatch ->
         :error

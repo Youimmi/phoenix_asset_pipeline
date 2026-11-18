@@ -14,7 +14,7 @@ Add the dependency and compilers to `mix.exs`:
 
 ```elixir
 def deps do
-  [{:phoenix_asset_pipeline, "~> 6.0"}]
+  [{:phoenix_asset_pipeline, "~> 7.0"}]
 end
 
 def project do
@@ -152,6 +152,8 @@ for example `:empty` or non-table `display` on table and `<select>` elements, wh
 whitespace is otherwise removed; this works in both `~H` and `.heex` templates and is
 omitted from the rendered HTML.
 The `~H` modifier `noformat` disables static minification for the entire template.
+HTML comments are removed unless `:debug_heex_annotations` is enabled for
+`:phoenix_live_view`, so LiveView's annotations stay visible in development.
 
 ## Formatting
 
@@ -182,13 +184,13 @@ Default inputs:
 - `assets/css/*.css`
 - `assets/img/**/*.{jpg,jpeg,png,webp,avif}`
 - `assets/svg/**/*.svg` and `assets/svg/sprites/<name>/*.svg`
-- `priv/static/**`
+- `priv/static/**`; files under `assets/{css,img,js,svg}` there fail the build, since those paths are reserved for built assets
 
-Declare Bun packages in `assets/package.json`. Dependencies are installed when the package or lockfile changes; production requires `assets/bun.lock` and uses `--frozen-lockfile`. The managed Bun 1.4.4 archive and executable are verified against pinned SHA-256 checksums before execution. TypeScript entry points are checked before Bun writes build outputs.
+Declare Bun packages in `assets/package.json`. Dependencies are installed when `package.json`, `bun.lock`, or `bunfig.toml` changes; production requires `assets/bun.lock` and uses `--frozen-lockfile`. The managed Bun 1.4.4 archive and executable are verified against pinned SHA-256 checksums before execution. TypeScript entry points are checked before Bun writes build outputs.
 
 Bun downloads use OTP's system CA certificates. Set `:bun_cacertfile` for a custom CA bundle.
 
-JavaScript builds support JavaScript and CSS imports. Imports that emit separate binary files fail the build; keep images and other static files in the asset directories above. Type-only imports, module-resolution directories, Tailwind imports, and external `@source` files participate in cache invalidation and development watching.
+JavaScript builds support JavaScript and CSS imports. CSS imported by a JavaScript entry is emitted as `assets/css/<entry>.css`, so it must not share its name with a CSS entry. Imports that emit separate binary files fail the build; keep images and other static files in the asset directories above. Type-only imports, module-resolution directories, Tailwind imports, and external `@source` files participate in cache invalidation and development watching.
 
 Class attribute selectors with `~=` and single-token `=` are renamed together with HTML classes, including inside `@supports selector()`. Feature-query syntax, comments, and unknown selector branches are preserved. Case-insensitive, partial-match, namespaced, and whitespace-containing equality selectors are rejected because their matching behavior cannot be preserved by class obfuscation and class normalization.
 
@@ -302,6 +304,8 @@ intact during a rebuild.
 
 ### SVG sprites
 
+Each directory `assets/svg/sprites/<name>` builds `<name>.svg`; `app` builds a stack sprite and other names build symbol sprites. SVG files directly in `assets/svg/sprites` fail the build.
+
 Select external SVGs by basename with `svg_sprites`; paths are relative to the project root:
 
 ```elixir
@@ -320,15 +324,18 @@ Internal SVG IDs are namespaced to prevent collisions. Use `namespace_ids: false
 
 Without `:names` or `:files`, sources are selected from literal icon references in
 Elixir and HEEx, including `name={"hero-check"}`. Comments and documentation are
-excluded. Remote `icon` and `menu_icon` components count by function name, since
-aliases are not resolved. List dynamically constructed icon names, or the icons of
-another library's components, explicitly with `:names`.
+excluded. Remote `icon` components count by function name, since aliases are not
+resolved, and string bodies of `icon_name` function clauses count as icon names.
+List other dynamically constructed icon names, or the icons of another library's
+components, explicitly with `:names`.
 
 ### Browser headers
 
-Install the canonical policy in the browser pipeline. HTML responses must contain exactly this one CSP header; missing, duplicate, or manually modified policies fail closed.
+Install the canonical policy in the endpoint, before the router, so error pages rendered before a router pipeline runs also carry it. HTML responses must contain exactly this one CSP header; missing, duplicate, or manually modified policies fail closed. Router errors such as unknown paths carry the policy. Exceptions raised by endpoint plugs, such as `Plug.Parsers.ParseError`, are rendered from the connection the endpoint received and carry no policy wherever the plugs are placed.
 
 ```elixir
+import Phoenix.Controller, only: [put_secure_browser_headers: 2]
+
 plug :put_secure_browser_headers, PhoenixAssetPipeline.Plug.secure_browser_headers()
 ```
 

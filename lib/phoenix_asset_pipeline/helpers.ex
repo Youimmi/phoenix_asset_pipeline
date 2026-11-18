@@ -141,8 +141,7 @@ defmodule PhoenixAssetPipeline.Helpers do
   Returns a safe inline `<style>` tag for a manifest-backed CSS asset.
   """
   def style(path, attrs \\ []) when is_list(attrs) do
-    extname = ".css"
-    %{content: content} = find!(:style_tags, file_path(path, extname))
+    %{content: content} = find!(:style_tags, file_path(path, ".css"))
 
     {:safe, [?<, "style", escape_attrs(attrs), ?>, content, ?<, ?/, "style", ?>]}
   end
@@ -345,7 +344,6 @@ defmodule PhoenixAssetPipeline.Helpers do
   defp src(path, fragment) do
     endpoint = Config.endpoint!()
     static_url = endpoint.static_url()
-    # The path prefix can change with the endpoint configuration while the origin stays the same.
     static_path = endpoint.static_path("/")
     digest = Manifest.get(:digest)
     key = {__MODULE__, :asset_urls, endpoint}
@@ -356,34 +354,28 @@ defmodule PhoenixAssetPipeline.Helpers do
         _ -> cache_asset_urls(key, {digest, static_url, static_path}, endpoint)
       end
 
-    # Without a manifest snapshot the path can belong to a generation a rebuild has just replaced.
     case urls do
       %{^path => url} -> url <> fragment
       _ -> asset_url(endpoint, static_url, path) <> fragment
     end
   end
 
-  defp srcset(srcset) when is_binary(srcset), do: srcset |> String.split(",", trim: true) |> srcset()
+  defp srcset(srcset) when is_binary(srcset), do: srcset |> String.split(",") |> srcset()
 
-  defp srcset([_ | _] = srcset) do
-    srcset
-    |> Enum.reduce([], fn part, acc ->
-      {url, descriptor} = part |> String.trim() |> srcset_part()
-
-      case acc do
-        [] -> [image_src(url), descriptor]
-        _ -> [acc, ?,, image_src(url), descriptor]
-      end
-    end)
-    |> IO.iodata_to_binary()
+  defp srcset(srcset) when is_list(srcset) do
+    case Enum.flat_map(srcset, &srcset_candidate/1) do
+      [] -> nil
+      candidates -> candidates |> Enum.intersperse(", ") |> IO.iodata_to_binary()
+    end
   end
 
-  defp srcset(srcset) when srcset in [nil, []], do: nil
+  defp srcset(nil), do: nil
 
-  defp srcset_part(part) do
-    case :binary.match(part, [" ", "\t"]) do
-      :nomatch -> {part, ""}
-      {index, 1} -> {binary_part(part, 0, index), binary_part(part, index, byte_size(part) - index)}
+  defp srcset_candidate(candidate) do
+    case String.split(candidate, [" ", "\t", "\n", "\f", "\r"], parts: 2, trim: true) do
+      [] -> []
+      [url] -> [image_src(url)]
+      [url, descriptor] -> [[image_src(url), ?\s, String.trim(descriptor)]]
     end
   end
 

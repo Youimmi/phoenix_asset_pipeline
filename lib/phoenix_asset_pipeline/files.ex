@@ -5,8 +5,6 @@ defmodule PhoenixAssetPipeline.Files do
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.Digest
 
-  # Returns `{path, digest}` for every regular file, sorted by path. Digests are cached by
-  # file identity in `cache_file`, so unchanged files are neither read nor hashed again.
   def digests(root, cache_file, mode \\ :sources) do
     cache_path = Path.join(Config.manifest_cache_dir(), cache_file)
     fingerprint = Digest.module_info(:md5)
@@ -29,7 +27,23 @@ defmodule PhoenixAssetPipeline.Files do
     Enum.sort(digests)
   end
 
-  # Calls `fun` with each regular file's path, its lstat (POSIX times), and the accumulator.
+  def read_regular!(path, stat \\ nil) do
+    expected = stat || File.lstat!(path)
+    if expected.type != :regular, do: raise(File.Error, reason: :eftype, action: "read regular file", path: path)
+
+    case :file.open(path, [:read, :binary, :raw]) do
+      {:ok, file} ->
+        try do
+          read_opened!(file, path, expected)
+        after
+          :file.close(file)
+        end
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "open regular file", path: path
+    end
+  end
+
   def reduce_regular_files(root, acc, fun, mode \\ :sources) when is_function(fun, 3) do
     root = Path.expand(root)
     mode = if mode == :static, do: {:static, root}, else: mode
@@ -67,12 +81,6 @@ defmodule PhoenixAssetPipeline.Files do
     |> Enum.sort()
   end
 
-  def relative_path(path, root) do
-    path
-    |> Path.relative_to(root)
-    |> String.replace("\\", "/")
-  end
-
   defp cached_digest(path, stat, cache, now) do
     signature = {stat.size, stat.mtime, stat.ctime, stat.inode, stat.major_device}
 
@@ -94,6 +102,19 @@ defmodule PhoenixAssetPipeline.Files do
   defp excluded?(".well-known", root, {:static, root}), do: false
   defp excluded?("." <> _, _, {:static, _}), do: true
   defp excluded?(_, _, _), do: false
+
+  defp read_opened!(file, path, expected) do
+    {:ok, info} = :file.read_file_info(file)
+
+    case File.Stat.from_record(info) do
+      %{inode: inode, major_device: device, size: size}
+      when inode == expected.inode and device == expected.major_device ->
+        if size == 0, do: "", else: file |> :file.read(size) |> elem(1)
+
+      _ ->
+        raise File.Error, reason: :eexist, action: "read a file replaced during the build", path: path
+    end
+  end
 
   defp reduce_dir(dir, acc, fun, mode) do
     case File.ls(dir) do

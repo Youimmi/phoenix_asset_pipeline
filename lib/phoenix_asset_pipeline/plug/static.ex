@@ -164,17 +164,21 @@ defmodule PhoenixAssetPipeline.Plug.Static do
     |> preferred_encoding(data)
   end
 
-  defp etag_header_match?(_, _, index, size) when index >= size, do: false
+  defp etag_header_match?(_, _, index, size, _) when index >= size, do: false
 
-  defp etag_header_match?(header, etag, index, size) do
+  defp etag_header_match?(header, etag, index, size, weak?) do
     index = skip_etag_separators(header, index, size)
 
     if index < size do
       start = weak_etag_start(header, index, size)
 
       case etag_stop(header, start, size) do
-        nil -> false
-        stop -> etag_part_match?(header, start, stop, etag) or etag_header_match?(header, etag, stop, size)
+        nil ->
+          false
+
+        stop ->
+          ((weak? or start == index) and etag_part_match?(header, start, stop, etag)) or
+            etag_header_match?(header, etag, stop, size, weak?)
       end
     else
       false
@@ -221,7 +225,7 @@ defmodule PhoenixAssetPipeline.Plug.Static do
 
   defp fresh_etag?([header], etag) do
     header = trim_ows(header)
-    header == etag or header == "*" or etag_header_match?(header, etag, 0, byte_size(header))
+    header == etag or header == "*" or etag_header_match?(header, etag, 0, byte_size(header), true)
   end
 
   defp fresh_etag?(headers, etag) do
@@ -237,17 +241,17 @@ defmodule PhoenixAssetPipeline.Plug.Static do
       hex?(path, index + 1, stop)
   end
 
-  # If-Match compares strongly; an asset without an entity tag matches only `*`.
   defp if_match?([], _), do: true
 
   defp if_match?(headers, entry) do
-    etag = if tuple_size(entry) == 3, do: elem(entry, 2)
+    case Enum.map(headers, &trim_ows/1) do
+      ["*"] ->
+        true
 
-    Enum.any?(headers, fn header ->
-      header
-      |> :binary.split(",", [:global])
-      |> Enum.any?(&(trim_ows(&1) in ["*", etag]))
-    end)
+      headers ->
+        tuple_size(entry) == 3 and
+          Enum.any?(headers, &etag_header_match?(&1, elem(entry, 2), 0, byte_size(&1), false))
+    end
   end
 
   defp parse_qvalue("0"), do: 0
@@ -410,7 +414,6 @@ defmodule PhoenixAssetPipeline.Plug.Static do
     |> halt()
   end
 
-  # The error must not inherit the representation's caching or encoding.
   defp send_range(conn, _, byte_size, :unsatisfiable) do
     conn
     |> delete_resp_header("cache-control")
@@ -516,7 +519,6 @@ defmodule PhoenixAssetPipeline.Plug.Static do
     end
   end
 
-  # Hosts are case-insensitive; the exact comparison covers what browsers send.
   defp static_asset(%{host: host, private: %{phoenix_router_host: router_host, phoenix_static_host: static_host}}, [
          <<_::binary-size(64), _::binary>> = path
        ]) do

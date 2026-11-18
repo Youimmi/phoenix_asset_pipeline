@@ -5,13 +5,13 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.Digest
   alias PhoenixAssetPipeline.Files
-  alias PhoenixAssetPipeline.HTML.Entities
   alias PhoenixAssetPipeline.HTML.TemplateScanner
 
   @scan_cache_file "sprite_scan.term"
   @source_digest_cache_file "sprite_source_digests.term"
   @sprite_group_type :svg_sprite_group
   @sprite_source_type :svg_sprite_source
+  @stack_sprites ["app.svg"]
 
   def signature(entries) do
     Enum.map(entries, fn
@@ -30,12 +30,18 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
   end
 
   def source_dirs(entries) do
+    configured =
+      for %{src: src} <- Config.svg_sprites(), path = Path.expand(src, Config.project_dir()) do
+        if File.dir?(path), do: path, else: Path.dirname(path)
+      end
+
     entries
     |> Enum.flat_map(fn
       {@sprite_group_type, _, _, _, nil, _} -> []
       {@sprite_group_type, _, _, _, metadata_path, _} -> [Path.dirname(metadata_path)]
       {@sprite_source_type, _, _, _, root, _} -> [root]
     end)
+    |> Kernel.++(configured)
     |> Enum.uniq()
   end
 
@@ -45,15 +51,23 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
         {@sprite_group_type, sprite, mode, namespace_ids?, metadata_digest}
 
       {@sprite_source_type, sprite, path, name, root, digest} ->
-        relative = Files.relative_path(path, root)
+        relative = Path.relative_to(path, root)
         {@sprite_source_type, sprite, name, relative, digest}
     end)
   end
 
+  def stack_sprites, do: @stack_sprites
+
   defp assign_source_name(id, assigned, candidates, local_source) do
     case best_source_candidate(id, candidates) do
       nil ->
-        _ = source_path(local_source, id)
+        with false <- File.exists?(Path.join(local_source, ensure_svg_ext(id))),
+             path when is_binary(path) <- configured_source_path(id, candidates) do
+          raise ArgumentError, "missing SVG sprite source for ##{id}: #{path}"
+        else
+          _ -> source_path(local_source, id)
+        end
+
         assigned
 
       {_, index, name, _} ->
@@ -77,15 +91,23 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
   end
 
   defp best_source_candidate(id, candidates) do
-    Enum.reduce(candidates, nil, fn {index, spec}, best ->
+    candidates
+    |> Enum.reduce({nil, nil}, fn {index, spec}, acc ->
       case source_candidate(id, index, spec) do
-        nil -> best
-        candidate -> select_source_candidate(id, candidate, best)
+        nil -> acc
+        candidate -> select_source_candidate(candidate, acc)
       end
     end)
+    |> case do
+      {best, nil} ->
+        best
+
+      {{_, _, _, source}, other_source} ->
+        raise ArgumentError,
+              "ambiguous SVG sprite source for ##{id}: #{inspect(source)} and #{inspect(other_source)}"
+    end
   end
 
-  # Parsing every source is the costly part of a snapshot, so references are cached by content.
   defp collect_source_file({path, digest}, {files, ids_by_sprite} = acc, cache) do
     case Path.extname(path) do
       extname when extname in [".ex", ".heex"] ->
@@ -114,19 +136,17 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
 
     case component(type, tag) do
       "icon" when is_binary(name) -> put_sprite_id(ids, sprite || "icons.svg", name)
-      "menu_icon" -> put_icons_id(sprite, put_icons_id(name, ids))
       _ -> ids
     end
   end
 
-  # Aliases cannot be resolved here, so a remote call is matched by its function name like a local one.
   defp component(:local_component, tag), do: tag
   defp component(:remote_component, tag), do: tag |> :binary.split(".", [:global]) |> List.last()
   defp component(_, _), do: nil
 
   defp configured_entries(assets_dir, config) do
-    specs = Enum.map(config, &source_config(assets_dir, &1))
-    used_ids_by_sprite = used_sprite_ids(assets_dir, specs)
+    specs = Enum.map(config, &source_config/1)
+    used_ids_by_sprite = used_sprite_ids(specs)
     source_names = assigned_source_names(assets_dir, used_ids_by_sprite, specs)
     groups = configured_sprite_groups(specs)
 
@@ -194,6 +214,23 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     end
   end
 
+  defp configured_source_path(id, candidates) do
+    candidates
+    |> Enum.flat_map(fn
+      {_, {_, _, source, :directory, _, prefix, suffix, _, _, opts}}
+      when not is_map_key(opts, :names) and not is_map_key(opts, :files) ->
+        case source_name(id, prefix, suffix) do
+          nil -> []
+          name -> [{byte_size(prefix) + byte_size(suffix), Path.join(source, ensure_svg_ext(name))}]
+        end
+
+      _ ->
+        []
+    end)
+    |> Enum.max_by(&elem(&1, 0), fn -> {0, nil} end)
+    |> elem(1)
+  end
+
   defp configured_sprite_groups(specs) do
     specs
     |> Enum.reduce(%{}, fn {sprite, mode, _, _, _, _, _, namespace_ids?, metadata, _}, groups ->
@@ -207,14 +244,12 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     |> Enum.sort_by(fn {@sprite_group_type, sprite, _, _, _, _} -> sprite end)
   end
 
-  defp default_mode("app.svg"), do: :stack
+  defp default_mode(sprite) when sprite in @stack_sprites, do: :stack
   defp default_mode(_), do: :symbol
 
   defp ensure_svg_ext(path) do
     if Path.extname(path) == ".svg", do: path, else: path <> ".svg"
   end
-
-  defp expand_project_path(path, assets_dir), do: Path.expand(path, Config.project_dir(assets_dir))
 
   defp explicit_source_candidate(id, index, source, prefix, suffix, [entry | entries], basename?)
        when is_binary(entry) and entry != "" do
@@ -259,13 +294,13 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
           "conflicting SVG sprite options for #{inspect(sprite)}: #{inspect(existing)} and #{inspect(next)}"
   end
 
-  defp metadata_source(assets_dir, opts) do
+  defp metadata_source(opts) do
     case Map.fetch(opts, :metadata_file) do
       :error ->
         nil
 
       {:ok, path} when is_binary(path) and path != "" ->
-        path = expand_project_path(path, assets_dir)
+        path = Path.expand(path, Config.project_dir())
         {path, file_digest!(path)}
 
       _ ->
@@ -285,7 +320,7 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     value =
       case value do
         {:expr, ast} -> ast
-        {:string, value} when key in ["name", "sprite", "icon"] -> Entities.decode_attribute(value)
+        {:string, value} -> value
         _ -> nil
       end
 
@@ -312,7 +347,6 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
   defp scan_fingerprint do
     {
       __MODULE__.module_info(:md5),
-      Entities.module_info(:md5),
       TemplateScanner.module_info(:md5),
       Application.spec(:phoenix_live_view, :vsn),
       System.version()
@@ -321,25 +355,23 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
 
   defp scanner, do: %{tag: &collect_tag/4, visit: &visit/2}
 
-  defp select_source_candidate(_, candidate, nil), do: candidate
+  defp select_source_candidate(candidate, {nil, _}), do: {candidate, nil}
 
-  defp select_source_candidate(_, {score, _, _, _} = candidate, {best_score, _, _, _}) when score > best_score do
-    candidate
+  defp select_source_candidate({score, _, _, _} = candidate, {{best_score, _, _, _}, _}) when score > best_score do
+    {candidate, nil}
   end
 
-  defp select_source_candidate(_, {score, _, _, _}, {best_score, _, _, _} = best) when score < best_score, do: best
-
-  defp select_source_candidate(id, {_, _, _, source}, {_, _, _, other_source}) do
-    raise ArgumentError,
-          "ambiguous SVG sprite source for ##{id}: #{inspect(other_source)} and #{inspect(source)}"
-  end
+  defp select_source_candidate({score, _, _, _}, {{best_score, _, _, _}, _} = acc) when score < best_score, do: acc
+  defp select_source_candidate({_, _, _, source}, {best, _}), do: {best, source}
 
   defp source_candidate(id, index, {_, _, source, :directory, _, prefix, suffix, _, _, opts}) do
     case {Map.get(opts, :names), Map.get(opts, :files)} do
       {nil, nil} ->
-        case source_name(id, prefix, suffix) do
-          nil -> nil
-          name -> {byte_size(prefix) + byte_size(suffix), index, name, source}
+        with name when is_binary(name) <- source_name(id, prefix, suffix),
+             true <- File.exists?(Path.join(source, ensure_svg_ext(name))) do
+          {byte_size(prefix) + byte_size(suffix), index, name, source}
+        else
+          _ -> nil
         end
 
       {names, nil} when is_list(names) ->
@@ -360,15 +392,15 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
       do: {byte_size(id) + 1, index, name, source}
   end
 
-  defp source_config(assets_dir, %{file: file, src: src} = opts)
+  defp source_config(%{file: file, src: src} = opts)
        when is_binary(file) and file != "" and is_binary(src) and src != "" do
     sprite = ensure_svg_ext(file)
     mode = opts |> Map.get(:mode, default_mode(sprite)) |> sprite_mode!()
     prefix = Map.get(opts, :prefix, "")
     suffix = Map.get(opts, :suffix, "")
     namespace_ids? = optional_boolean!(opts, :namespace_ids)
-    metadata = metadata_source(assets_dir, opts)
-    source = expand_project_path(src, assets_dir)
+    metadata = metadata_source(opts)
+    source = Path.expand(src, Config.project_dir())
     source_type = source_type!(source)
     root = if source_type == :directory, do: source, else: Path.dirname(source)
 
@@ -379,7 +411,7 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     {sprite, mode, source, source_type, root, prefix, suffix, namespace_ids?, metadata, opts}
   end
 
-  defp source_config(_, opts) do
+  defp source_config(opts) do
     raise ArgumentError,
           "invalid :svg_sprites entry #{inspect(opts)}; expected a map with non-empty :file and :src strings"
   end
@@ -441,7 +473,7 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
     raise ArgumentError, "invalid SVG sprite mode #{inspect(mode)}; expected :symbol or :stack"
   end
 
-  defp used_sprite_ids(assets_dir, specs) do
+  defp used_sprite_ids(specs) do
     ids_by_sprite =
       for {sprite, _, _, _, _, _, _, _, _, opts} <- specs,
           not is_map_key(opts, :names) and not is_map_key(opts, :files),
@@ -457,8 +489,7 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
       cache = Cache.read_map(cache_path, fingerprint)
 
       {files, ids_by_sprite} =
-        assets_dir
-        |> Config.project_dir()
+        Config.project_dir()
         |> Path.join("lib")
         |> Files.digests(@source_digest_cache_file)
         |> Enum.reduce({%{}, ids_by_sprite}, &collect_source_file(&1, &2, cache))
@@ -472,6 +503,11 @@ defmodule PhoenixAssetPipeline.Assets.Sprites do
 
   defp visit({{:., _, [_, :svg_sprite_href]}, _, [value]}, ids) when is_binary(value) do
     {:ok, collect_sprite_href(value, ids)}
+  end
+
+  defp visit({kind, _, [{:when, _, [{:icon_name, _, _} | _]}, [do: value]]}, ids)
+       when kind in [:def, :defp] and is_binary(value) do
+    {:ok, put_icons_id(value, ids)}
   end
 
   defp visit({kind, _, [{:icon_name, _, _}, [do: value]]}, ids) when kind in [:def, :defp] and is_binary(value) do

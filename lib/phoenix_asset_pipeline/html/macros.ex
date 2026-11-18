@@ -17,20 +17,8 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   @track_mapping_resource PhoenixAssetPipeline.Config.precompiled_manifest?()
 
   defmacro __before_compile__(env) do
-    descriptors =
-      env.module
-      |> Module.get_attribute(:class_descriptors)
-      |> List.wrap()
-      |> Enum.uniq_by(&elem(&1, 0))
-      |> Enum.sort_by(&elem(&1, 0))
-
-    fixed_class_mappings = fixed_class_mappings!(env.module)
-
-    quote do
-      def __class_descriptors__, do: unquote(Macro.escape(descriptors))
-      def __fixed_class_mappings__, do: unquote(Macro.escape(fixed_class_mappings))
-      def class_names, do: @class_names
-    end
+    validate_fixed_class_mappings!(env.module)
+    nil
   end
 
   @doc false
@@ -41,7 +29,6 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
       Enum.all?(classes, &literal_class?/1) ->
         class_ast(classes, nil, env, false)
 
-      # Only a fully literal value is rewritten, so a literal next to or inside a dynamic one would stay unobfuscated.
       embedded_literal?(classes) ->
         raise ArgumentError,
               "literal class strings mixed with dynamic values are not supported in class attributes. " <>
@@ -55,13 +42,13 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   defmacro __using__(_) do
     ModuleClasses.ensure_prepared!()
 
-    Module.register_attribute(__CALLER__.module, :class_descriptors, accumulate: true)
-    Module.register_attribute(__CALLER__.module, :class_names, accumulate: true)
-
-    Module.register_attribute(__CALLER__.module, @fixed_mappings_attribute,
-      accumulate: true,
-      persist: true
-    )
+    for attribute <- [
+          :phoenix_asset_pipeline_class_descriptors,
+          :phoenix_asset_pipeline_class_names,
+          @fixed_mappings_attribute
+        ] do
+      Module.register_attribute(__CALLER__.module, attribute, accumulate: true, persist: true)
+    end
 
     if @track_mapping_resource do
       Module.put_attribute(__CALLER__.module, :external_resource, ModuleClasses.mapping_path())
@@ -235,7 +222,6 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   defp descriptor_kind(nil), do: :string
   defp descriptor_kind(_), do: :attr
 
-  # Follows only the positions an expression can return, so strings in conditions and arguments are ignored.
   defp embedded_literal?(<<value::binary>>), do: String.trim(value) != ""
   defp embedded_literal?(values) when is_list(values), do: Enum.any?(values, &embedded_literal?/1)
   defp embedded_literal?({:{}, _, [truthy, falsy, _]}), do: embedded_literal?([truthy, falsy])
@@ -254,38 +240,14 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
     end)
   end
 
-  defp embedded_literal?({operator, _, values}) when operator in [:&&, :and, :or, :||, :<>, :<<>>] do
+  defp embedded_literal?({operator, _, [_, value]}) when operator in [:&&, :and], do: embedded_literal?(value)
+
+  defp embedded_literal?({operator, _, values}) when operator in [:++, :<<>>, :<>, :or, :|, :||] do
     embedded_literal?(values)
   end
 
   defp embedded_literal?({classes, _}), do: embedded_literal?(classes)
   defp embedded_literal?(_), do: false
-
-  defp fixed_class_mappings!(module) do
-    {mappings, _} =
-      module
-      |> Module.get_attribute(@fixed_mappings_attribute)
-      |> List.wrap()
-      |> Enum.reduce({%{}, %{}}, fn {class_name, short_name}, {mappings, short_names} ->
-        case mappings do
-          %{^class_name => other} when other != short_name ->
-            raise "module class #{inspect(class_name)} maps both #{inspect(other)} and #{inspect(short_name)}"
-
-          _ ->
-            :ok
-        end
-
-        case short_names do
-          %{^short_name => other} when other != class_name ->
-            raise "module class name #{inspect(short_name)} is shared by #{inspect(other)} and #{inspect(class_name)}"
-
-          _ ->
-            {Map.put(mappings, class_name, short_name), Map.put(short_names, short_name, class_name)}
-        end
-      end)
-
-    mappings |> Map.to_list() |> Enum.sort()
-  end
 
   defp handle_choice_class(
          {:ok, truthy_class_list, truthy_extra_whitespace?},
@@ -331,8 +293,9 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
         }
 
       true ->
-        class_list = truthy_class_list ++ falsy_class_list
-        {seen, duplicates} = put_class_names(class_list, module, seen, duplicates)
+        {truthy_seen, duplicates} = put_class_names(truthy_class_list, module, seen, duplicates)
+        {falsy_seen, duplicates} = put_class_names(falsy_class_list, module, seen, duplicates)
+        seen = MapSet.union(truthy_seen, falsy_seen)
 
         {
           static_class_names,
@@ -356,10 +319,6 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
   end
 
   defp handle_class({:{}, _, [truthy_classes, falsy_classes, condition]}, module, stacktrace, acc) do
-    handle_class({truthy_classes, falsy_classes, condition}, module, stacktrace, acc)
-  end
-
-  defp handle_class({truthy_classes, falsy_classes, condition}, module, stacktrace, acc) do
     truthy_class_group = class_group(truthy_classes)
     falsy_class_group = class_group(falsy_classes)
 
@@ -443,21 +402,17 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
     ClassNames.literal?(truthy_classes) and ClassNames.literal?(falsy_classes)
   end
 
-  defp literal_class?({truthy_classes, falsy_classes, _}) do
-    ClassNames.literal?(truthy_classes) and ClassNames.literal?(falsy_classes)
-  end
-
   defp literal_class?({classes, _}), do: ClassNames.literal?(classes)
   defp literal_class?(classes), do: ClassNames.literal?(classes)
 
   defp put_class_descriptor(module, kind, descriptor) do
     key = {kind, descriptor_hash(descriptor)}
-    Module.put_attribute(module, :class_descriptors, {key, descriptor})
+    Module.put_attribute(module, :phoenix_asset_pipeline_class_descriptors, {key, descriptor})
     key
   end
 
   defp put_class_names([class_name | rest], module, seen, duplicates) do
-    Module.put_attribute(module, :class_names, class_name)
+    Module.put_attribute(module, :phoenix_asset_pipeline_class_names, class_name)
 
     duplicates =
       if MapSet.member?(seen, class_name),
@@ -523,5 +478,23 @@ defmodule PhoenixAssetPipeline.HTML.Macros do
         unquote(attr_key)
       )
     end
+  end
+
+  defp validate_fixed_class_mappings!(module) do
+    module
+    |> Module.get_attribute(@fixed_mappings_attribute)
+    |> List.wrap()
+    |> Enum.reduce({%{}, %{}}, fn {class_name, short_name}, {mappings, short_names} ->
+      case {mappings, short_names} do
+        {%{^class_name => other}, _} when other != short_name ->
+          raise "module class #{inspect(class_name)} maps both #{inspect(other)} and #{inspect(short_name)}"
+
+        {_, %{^short_name => other}} when other != class_name ->
+          raise "module class name #{inspect(short_name)} is shared by #{inspect(other)} and #{inspect(class_name)}"
+
+        _ ->
+          {Map.put(mappings, class_name, short_name), Map.put(short_names, short_name, class_name)}
+      end
+    end)
   end
 end

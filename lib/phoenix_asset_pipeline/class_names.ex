@@ -13,7 +13,7 @@ defmodule PhoenixAssetPipeline.ClassNames do
 
   def new(mappings), do: {mappings, reverse!(mappings), %{}}
 
-  def prefix(class_name), do: class_name |> AnyAscii.transliterate() |> prefix_char()
+  def prefix(class_name), do: prefix_char(class_name)
 
   def reverse!(mappings) do
     Enum.reduce(mappings, %{}, fn {class_name, short_name}, short_names ->
@@ -27,10 +27,9 @@ defmodule PhoenixAssetPipeline.ClassNames do
     end)
   end
 
-  # Returns the class tokens and whether the string holds anything but single separators.
   def split(classes) do
     class_list = :binary.split(classes, @whitespace, [:global, :trim_all])
-    {class_list, byte_size(classes) != :erlang.iolist_size(class_list) + length(class_list) - 1}
+    {class_list, byte_size(classes) != :erlang.iolist_size(class_list) + max(length(class_list) - 1, 0)}
   end
 
   def variant(class_name) do
@@ -52,8 +51,9 @@ defmodule PhoenixAssetPipeline.ClassNames do
     end
   end
 
-  defp prefix_char([char | _]) when char in ?a..?z, do: <<char>>
-  defp prefix_char([char | _]) when char in ?A..?Z, do: <<char + 32>>
-  defp prefix_char([_ | rest]), do: prefix_char(rest)
-  defp prefix_char(_), do: "c"
+  defp prefix_char(<<char, _::binary>>) when char in ?a..?z, do: <<char>>
+  defp prefix_char(<<char, _::binary>>) when char in ?A..?Z, do: <<char + 32>>
+  defp prefix_char(<<char, rest::binary>>) when char < 128, do: prefix_char(rest)
+  defp prefix_char(<<>>), do: "c"
+  defp prefix_char(class_name), do: class_name |> AnyAscii.transliterate() |> IO.iodata_to_binary() |> prefix_char()
 end

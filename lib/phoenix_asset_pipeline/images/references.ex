@@ -1,7 +1,6 @@
 defmodule PhoenixAssetPipeline.Images.References do
   @moduledoc false
 
-  alias PhoenixAssetPipeline.HTML.Entities
   alias PhoenixAssetPipeline.HTML.TemplateScanner
 
   def scan!(paths) do
@@ -64,8 +63,8 @@ defmodule PhoenixAssetPipeline.Images.References do
     end
   end
 
-  defp collect_spread({:image_attrs, _, args}, refs), do: collect_image(args, refs)
-  defp collect_spread({{:., _, [_, :image_attrs]}, _, args}, refs), do: collect_image(args, refs)
+  defp collect_spread({:image_attrs, _, args}, refs) when is_list(args), do: refs
+  defp collect_spread({{:., _, [_, :image_attrs]}, _, args}, refs) when is_list(args), do: refs
 
   defp collect_spread({:%{}, _, pairs}, refs), do: collect_static_picture(literal_attributes!(pairs), refs)
   defp collect_spread(pairs, refs) when is_list(pairs), do: collect_static_picture(literal_attributes!(pairs), refs)
@@ -136,7 +135,7 @@ defmodule PhoenixAssetPipeline.Images.References do
 
   defp put_attribute({:root, {:expr, ast}}, attrs), do: Map.update(attrs, :root, [ast], &[ast | &1])
   defp put_attribute({key, {:expr, ast}}, attrs), do: Map.put(attrs, key, ast)
-  defp put_attribute({key, {:string, value}}, attrs), do: Map.put(attrs, key, Entities.decode_attribute(value))
+  defp put_attribute({key, {:string, value}}, attrs), do: Map.put(attrs, key, value)
   defp put_attribute({key, nil}, attrs), do: Map.put(attrs, key, nil)
 
   defp scanner, do: %{tag: &collect_tag/4, visit: &visit/2}

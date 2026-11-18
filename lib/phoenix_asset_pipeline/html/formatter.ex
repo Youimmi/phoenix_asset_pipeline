@@ -58,7 +58,6 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     leading_indent(line) == attr_indent and not is_nil(attr_chunk_id(line))
   end
 
-  # Whether the attributes of an opening tag include `name`, skipping values and expressions.
   defp attribute?(<<char, rest::binary>>, name) when char in ~c"\s\t\r\n/", do: attribute?(rest, name)
   defp attribute?(<<?>, _::binary>>, _), do: false
   defp attribute?("", _), do: false
@@ -81,6 +80,17 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
       {index, _} -> {binary_part(source, 0, index), binary_part(source, index, byte_size(source) - index)}
       :nomatch -> {source, ""}
     end
+  end
+
+  defp attribute_value(class) do
+    escaped =
+      Regex.replace(~r/&(?=#[0-9]|#[xX][0-9A-Fa-f]|[A-Za-z])|["<]/, class, fn
+        "&" -> "&amp;"
+        "\"" -> "&quot;"
+        "<" -> "&lt;"
+      end)
+
+    ~s("#{escaped}")
   end
 
   defp class_attribute_match(source), do: class_attribute_match(source, 0, 0, nil)
@@ -121,7 +131,6 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
   defp class_attribute_size(source), do: class_attribute_size(source, source, 0)
 
-  # Whitespace around `=` is allowed and removed when the value is formatted.
   defp class_attribute_size(original, <<char, _::binary>> = rest, size) when char in ~c"=\s\t\r\n" do
     name = binary_part(original, 0, size)
     if name == "class" or String.ends_with?(name, "_class"), do: equals_size(rest, size, false)
@@ -141,34 +150,57 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     format_tag_class_attributes(tail, opts, [head | acc], append_line(line, head))
   end
 
-  defp consume_markup(source, opts, acc, line, 0) do
-    case take_markup_tag(source) do
-      {:ok, tag, rest} ->
-        formatted = format_markup_tag(tag, opts, line)
-        acc = [formatted | acc]
-        line = append_line(line, formatted)
+  defp consume_element(tag, rest, opts, acc, line, mode) do
+    braces? = mode == nil
 
-        case no_format_tag(tag) do
-          nil ->
-            format_markup(rest, opts, acc, line, raw_text_tag(tag))
+    case {markup_element(tag), raw_text_tag(tag)} do
+      {{name, true, no_curly?}, _} ->
+        index = element_close_index(rest, {name, braces? and not no_curly?}, 0, 0)
+        kept = binary_part(rest, 0, index)
 
-          name ->
-            # The contents of a phx-no-format element are copied unchanged up to its closing tag.
-            index = element_close_index(rest, name, 0, 0)
-            kept = binary_part(rest, 0, index)
-            rest = binary_part(rest, index, byte_size(rest) - index)
-            format_markup(rest, opts, [kept | acc], append_line(line, kept), nil)
-        end
+        format_markup(
+          binary_part(rest, index, byte_size(rest) - index),
+          opts,
+          [kept | acc],
+          append_line(line, kept),
+          mode
+        )
 
-      :error ->
-        format_markup("", opts, [source | acc], append_line(line, source), nil)
+      {_, {name, raw_braces?}} ->
+        format_markup(rest, opts, acc, line, {name, braces? and raw_braces?, mode})
+
+      {{name, false, true}, _} when braces? ->
+        index = element_close_index(rest, {name, false}, 0, 0)
+        inner = rest |> binary_part(0, index) |> format_markup(opts, [], line, :no_curly)
+
+        format_markup(
+          binary_part(rest, index, byte_size(rest) - index),
+          opts,
+          [inner | acc],
+          append_line(line, inner),
+          nil
+        )
+
+      _ ->
+        format_markup(rest, opts, acc, line, mode)
     end
   end
 
-  defp consume_markup(source, opts, acc, line, index) do
+  defp consume_markup(source, opts, acc, line, 0, mode) do
+    case take_markup_tag(source) do
+      {:ok, tag, rest} ->
+        formatted = format_markup_tag(tag, opts, line)
+        consume_element(tag, rest, opts, [formatted | acc], append_line(line, formatted), mode)
+
+      :error ->
+        format_markup("", opts, [source | acc], append_line(line, source), mode)
+    end
+  end
+
+  defp consume_markup(source, opts, acc, line, index, mode) do
     prefix = binary_part(source, 0, index)
     rest = binary_part(source, index, byte_size(source) - index)
-    format_markup(rest, opts, [prefix | acc], append_line(line, prefix), nil)
+    format_markup(rest, opts, [prefix | acc], append_line(line, prefix), mode)
   end
 
   defp consume_markup_expression(source, opts, acc, line, 0) do
@@ -189,10 +221,8 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     format_markup(rest, opts, [prefix | acc], append_line(line, prefix), nil)
   end
 
-  # Scans markup for the matching closing tag, skipping comments, EEx tags, expressions,
-  # attribute values and raw text, where a closing tag is only text.
-  defp element_close_index(source, name, offset, depth) do
-    case :binary.match(source, ["<", "{"], scope: {offset, byte_size(source) - offset}) do
+  defp element_close_index(source, {name, braces?} = element, offset, depth) do
+    case :binary.match(source, if(braces?, do: ["<", "{"], else: ["<"]), scope: {offset, byte_size(source) - offset}) do
       :nomatch ->
         byte_size(source)
 
@@ -201,16 +231,16 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
         cond do
           :binary.at(source, index) == ?{ ->
-            skip_markup(source, name, depth, take_braced(rest))
+            skip_markup(source, element, depth, take_braced(rest))
 
           element_tag?(rest, "</" <> name) and depth == 0 ->
             index
 
           element_tag?(rest, "</" <> name) ->
-            element_close_index(source, name, index + 1, depth - 1)
+            element_close_index(source, element, index + 1, depth - 1)
 
           true ->
-            skip_markup_tag(source, name, depth, rest)
+            skip_markup_tag(source, element, depth, rest)
         end
     end
   end
@@ -233,8 +263,6 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   defp format_attr_expr(expr, indent, opts) do
     trimmed = String.trim(expr)
 
-    # Class strings are split on whitespace, but other literals are kept verbatim: re-indenting
-    # a multi-line string or sigil would change its value.
     case Code.string_to_quoted_with_comments(trimmed) do
       {:ok, list, []} when is_list(list) ->
         {classes, others} = Enum.split_with(list, &is_binary/1)
@@ -287,8 +315,7 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
         case value |> Entities.decode_attribute() |> split_classes() |> grouped_classes(opts) do
           [class] ->
-            {:safe, escaped} = Phoenix.HTML.html_escape(class)
-            {:ok, IO.iodata_to_binary([?", escaped, ?"]), rest}
+            {:ok, attribute_value(class), rest}
 
           classes ->
             items = Enum.map(classes, &literal/1)
@@ -401,22 +428,22 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
   defp format_markup("", _, acc, _, _), do: reverse_iodata_to_binary(acc)
 
-  defp format_markup(source, opts, acc, line, raw_tag) when is_tuple(raw_tag) do
-    case raw_text_end(source, raw_tag, 0) do
+  defp format_markup(source, opts, acc, line, {name, braces?, mode} = raw_tag) do
+    case raw_text_end(source, {name, braces?}, 0) do
       nil -> format_markup("", opts, [source | acc], append_line(line, source), raw_tag)
-      index -> consume_markup(source, opts, acc, line, index)
+      index -> consume_markup(source, opts, acc, line, index, mode)
     end
   end
 
-  defp format_markup(source, opts, acc, line, nil) do
-    case :binary.match(source, ["<", "{"]) do
+  defp format_markup(source, opts, acc, line, mode) do
+    case :binary.match(source, if(mode == nil, do: ["<", "{"], else: ["<"])) do
       :nomatch ->
-        format_markup("", opts, [source | acc], append_line(line, source), nil)
+        format_markup("", opts, [source | acc], append_line(line, source), mode)
 
       {index, 1} ->
         if :binary.at(source, index) == ?{,
           do: consume_markup_expression(source, opts, acc, line, index),
-          else: consume_markup(source, opts, acc, line, index)
+          else: consume_markup(source, opts, acc, line, index, mode)
     end
   end
 
@@ -431,8 +458,6 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
     |> sort_tag_attributes()
   end
 
-  # Rewritten class attributes can change the layout HTMLFormatter chose, so changed output is laid
-  # out again, as the next `mix format` run would.
   defp format_source(source, opts) do
     case format_class_attributes(source, opts) do
       ^source ->
@@ -502,19 +527,16 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
   defp literal(value), do: inspect(value, limit: :infinity, printable_limit: :infinity)
 
-  # Returns the lowercase name of an element whose contents phx-no-format protects.
-  defp no_format_tag(<<"<", first, _::binary>> = tag) when first in ?a..?z or first in ?A..?Z or first in [?., ?:] do
+  defp markup_element(<<"<", first, _::binary>> = tag) when first in ?a..?z or first in ?A..?Z or first in [?., ?:] do
     {name, attributes} = split_tag(tag)
     name = String.downcase(name, :ascii)
 
-    if attribute?(attributes, "phx-no-format") and not Minifier.void_tag?(name) and
-         not String.ends_with?(String.trim_trailing(tag), "/>"),
-       do: name
+    if not Minifier.void_tag?(name) and not String.ends_with?(String.trim_trailing(tag), "/>"),
+      do: {name, attribute?(attributes, "phx-no-format"), attribute?(attributes, "phx-no-curly-interpolation")}
   end
 
-  defp no_format_tag(_), do: nil
+  defp markup_element(_), do: nil
 
-  # Reformatting would re-indent text inside multi-line strings and sigils, changing their values.
   defp preserved_literals?(quoted) do
     quoted
     |> Macro.prewalk(false, fn
@@ -559,8 +581,6 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   end
 
   defp raw_text_skip(source, raw, _, {:ok, _, rest}), do: raw_text_end(source, raw, byte_size(source) - byte_size(rest))
-  # An unmatched brace means braces are literal in this element, for example through an inherited
-  # phx-no-curly-interpolation, so the rest is scanned without them.
   defp raw_text_skip(source, {tag, _}, index, :error), do: raw_text_end(source, {tag, false}, index + 1)
 
   defp raw_text_tag(<<"<", first, _::binary>> = tag) when first in [?p, ?P, ?s, ?S, ?t, ?T] do
@@ -679,25 +699,26 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
 
   defp skip_markup(source, _, _, :error), do: byte_size(source)
 
-  defp skip_markup(source, name, depth, {:ok, _, rest}) do
-    element_close_index(source, name, byte_size(source) - byte_size(rest), depth)
+  defp skip_markup(source, element, depth, {:ok, _, rest}) do
+    element_close_index(source, element, byte_size(source) - byte_size(rest), depth)
   end
 
-  defp skip_markup_tag(source, name, depth, rest) do
+  defp skip_markup_tag(source, {name, braces?} = element, depth, rest) do
     case take_markup_tag(rest) do
       {:ok, tag, after_tag} ->
         offset = byte_size(source) - byte_size(after_tag)
 
         cond do
           raw_tag = raw_text_tag(tag) ->
-            raw_size = raw_text_end(after_tag, raw_tag, 0) || byte_size(after_tag)
-            element_close_index(source, name, offset + raw_size, depth)
+            {raw_name, raw_braces?} = raw_tag
+            raw_size = raw_text_end(after_tag, {raw_name, braces? and raw_braces?}, 0) || byte_size(after_tag)
+            element_close_index(source, element, offset + raw_size, depth)
 
           element_tag?(rest, "<" <> name) and not String.ends_with?(String.trim_trailing(tag), "/>") ->
-            element_close_index(source, name, offset, depth + 1)
+            element_close_index(source, element, offset, depth + 1)
 
           true ->
-            element_close_index(source, name, offset, depth)
+            element_close_index(source, element, offset, depth)
         end
 
       :error ->
@@ -870,6 +891,7 @@ defmodule PhoenixAssetPipeline.HTML.Formatter do
   defp take_braced(_), do: :error
 
   defp take_markup_tag("<!--" <> _ = source), do: take_markup_until(source, "-->")
+  defp take_markup_tag("<%!--" <> _ = source), do: take_markup_until(source, "--%>")
   defp take_markup_tag("<%" <> _ = source), do: take_markup_until(source, "%>")
   defp take_markup_tag(source), do: take_markup_tag(source, source, 0, 0, nil)
 

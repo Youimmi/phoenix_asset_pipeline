@@ -1,11 +1,6 @@
 defmodule PhoenixAssetPipeline.HTML.TemplateScanner do
   @moduledoc false
 
-  # Walks Elixir source and HEEx templates for asset references. `visit` sees each Elixir node first
-  # and returns `{:ok, acc}` when it consumed the node or `:next` to descend into it. `tag` sees each
-  # HEEx tag with its attributes as `{key, {:expr, ast} | {:string, raw} | nil}`, after the
-  # attribute expressions were scanned.
-
   alias Phoenix.LiveView.TagEngine.Parser
 
   @declarations [:callback, :doc, :macrocallback, :moduledoc, :opaque, :spec, :type, :typedoc, :typep]
@@ -39,7 +34,6 @@ defmodule PhoenixAssetPipeline.HTML.TemplateScanner do
   defp attribute({key, {:string, value, _}, _}, {attrs, acc}, _), do: {[{key, {:string, value}} | attrs], acc}
   defp attribute({key, _, _}, {attrs, acc}, _), do: {[{key, nil} | attrs], acc}
 
-  # Documentation and type declarations name functions without calling them.
   defp children({:@, _, [{kind, _, _}]}, acc, _) when kind in @declarations, do: acc
   defp children({:quote, _, _}, acc, _), do: acc
 
@@ -47,13 +41,12 @@ defmodule PhoenixAssetPipeline.HTML.TemplateScanner do
     heex(source, acc, scanner)
   end
 
-  # A definition's head only declares parameters, but its default values are evaluated.
   defp children({kind, _, [head | body]}, acc, scanner) when kind in @definitions do
     acc = head |> defaults() |> Enum.reduce(acc, &ast(&1, &2, scanner))
     ast(body, acc, scanner)
   end
 
-  defp children({_, _, args}, acc, scanner) when is_list(args), do: ast(args, acc, scanner)
+  defp children({callee, _, args}, acc, scanner) when is_list(args), do: ast(args, ast(callee, acc, scanner), scanner)
   defp children({left, right}, acc, scanner), do: ast(right, ast(left, acc, scanner), scanner)
   defp children([node | nodes], acc, scanner), do: ast(nodes, ast(node, acc, scanner), scanner)
   defp children(_, acc, _), do: acc
@@ -78,7 +71,6 @@ defmodule PhoenixAssetPipeline.HTML.TemplateScanner do
     {clauses, {acc, _}} =
       Enum.map_reduce(clauses, state, fn {nodes, expression, _}, {acc, previous_clause?} ->
         clause? = String.ends_with?(String.trim_trailing(expression), "->")
-        # The first case/cond clause has no preceding body; empty branches still need nil.
         body = if clause? and not previous_clause?, do: "\n", else: "\nnil\n"
         {[body, expression], {Enum.reduce(nodes, acc, &node(&1, &2, scanner)), clause?}}
       end)

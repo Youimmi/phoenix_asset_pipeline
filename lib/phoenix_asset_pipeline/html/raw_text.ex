@@ -5,11 +5,9 @@ defmodule PhoenixAssetPipeline.HTML.RawText do
   # whitespace is significant.
   @tags MapSet.new(~w(pre script style textarea title))
 
-  # A tag name ends at whitespace, `>`, `/` or the end of the input.
   def boundary?(source, index) when index == byte_size(source), do: true
   def boundary?(source, index), do: :binary.at(source, index) in [?>, ?/, ?\s, ?\t, ?\n, ?\r, ?\f]
 
-  # Returns the index of the first `</tag` closing tag, matched case-insensitively, or nil.
   def close_index(source, tag), do: close_index(source, tag, 0)
 
   def closing_tag?(source, tag) do

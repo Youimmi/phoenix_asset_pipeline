@@ -10,6 +10,7 @@ defmodule PhoenixAssetPipeline.Manifest do
   """
   use GenServer
 
+  alias PhoenixAssetPipeline.Assets.Images
   alias PhoenixAssetPipeline.Cache
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.StaticAsset
@@ -160,21 +161,33 @@ defmodule PhoenixAssetPipeline.Manifest do
         retired: MapSet.new()
       }
 
-      {:ok, replace_manifest(state, build_generated_files(cold_manifest()))}
+      manifest =
+        case :persistent_term.get(@cold_cache_key, nil) do
+          {signature, manifest} when not is_nil(signature) ->
+            if signature == cache_signature(), do: manifest, else: read_cached_manifest!()
+
+          _ ->
+            read_cached_manifest!()
+        end
+
+      state = replace_manifest(state, build_generated_files(manifest))
+      :persistent_term.erase(@cold_cache_key)
+      {:ok, state}
     end
 
-    # A running server already holds the manifest; only a cold VM reads the cache file.
     @doc false
     def loaded? do
       if Process.whereis(__MODULE__) do
         true
       else
+        signature = cache_signature()
+
         case read_cached_manifest() do
           :error ->
             false
 
           manifest ->
-            :persistent_term.put(@cold_cache_key, manifest)
+            :persistent_term.put(@cold_cache_key, {signature, manifest})
             true
         end
       end
@@ -217,6 +230,13 @@ defmodule PhoenixAssetPipeline.Manifest do
       }
     end
 
+    defp cache_signature do
+      case File.stat(cache_path(), time: :posix) do
+        {:ok, %{inode: inode, mtime: mtime, size: size}} -> {inode, mtime, size}
+        {:error, _} -> nil
+      end
+    end
+
     defp capture_snapshot do
       if Process.whereis(__MODULE__) do
         GenServer.call(__MODULE__, :acquire_snapshot)
@@ -242,16 +262,16 @@ defmodule PhoenixAssetPipeline.Manifest do
     defp cold_manifest do
       case :persistent_term.get(@cold_cache_key, @storage_missing) do
         @storage_missing ->
+          signature = cache_signature()
           manifest = read_cached_manifest!()
-          :persistent_term.put(@cold_cache_key, manifest)
+          :persistent_term.put(@cold_cache_key, {signature, manifest})
           manifest
 
-        manifest ->
+        {_, manifest} ->
           manifest
       end
     end
 
-    # The current_* readers retry when the generation is replaced mid-read.
     defp current_find(term, key) do
       case current_generation() do
         @storage_missing ->
@@ -334,7 +354,6 @@ defmodule PhoenixAssetPipeline.Manifest do
       __MODULE__
       |> :ets.match_object({{generation, :_, :_}, :_})
       |> Enum.reduce(manifest, fn {{^generation, term, key}, value}, manifest ->
-        # The section marker can already be deleted; the caller retries on a replaced generation.
         Map.put(manifest, term, Map.put(Map.get(manifest, term, %{}), key, value))
       end)
     rescue
@@ -392,7 +411,8 @@ defmodule PhoenixAssetPipeline.Manifest do
 
     defp read_cached_manifest do
       Cache.read_term(cache_path(), :error, fn
-        manifest when is_map(manifest) ->
+        %{images: images} = manifest when is_map(images) ->
+          manifest = %{manifest | images: Map.new(images, &read_image_blobs/1)}
           if valid?(manifest), do: {:ok, manifest}, else: :error
 
         _ ->
@@ -401,10 +421,18 @@ defmodule PhoenixAssetPipeline.Manifest do
     end
 
     defp read_cached_manifest! do
-      case read_cached_manifest() do
-        :error -> raise "missing or invalid cached asset manifest #{cache_path()}; run `mix compile`"
-        manifest -> manifest
+      with :error <- read_cached_manifest(),
+           :error <- read_cached_manifest() do
+        raise "missing or invalid cached asset manifest #{cache_path()}; run `mix compile`"
       end
+    end
+
+    defp read_image_blobs({path, image}) do
+      {path,
+       %{
+         image
+         | data: Map.new(image.data, fn {encoding, {{:blob, hex}, meta}} -> {encoding, {Cache.read_blob!(hex), meta}} end)
+       }}
     end
 
     defp release_generation(state, pid, generation) do
@@ -527,8 +555,29 @@ defmodule PhoenixAssetPipeline.Manifest do
     def save_cached(_), do: raise("cached manifests are disabled in :precompiled mode")
   else
     def save_cached(manifest) when is_map(manifest) do
-      Cache.write_term!(cache_path(), manifest)
-      :persistent_term.put(@cold_cache_key, manifest)
+      images =
+        Map.new(manifest.images, fn {path, image} ->
+          {path,
+           %{
+             image
+             | data:
+                 Map.new(image.data, fn {encoding, {content, meta}} ->
+                   {encoding, {{:blob, Cache.put_blob!(content, if(encoding == "raw", do: image.digest))}, meta}}
+                 end)
+           }}
+        end)
+
+      Cache.write_term!(cache_path(), %{manifest | images: images})
+
+      images
+      |> Enum.flat_map(fn {_, image} -> Enum.map(image.data, fn {_, {{:blob, hex}, _}} -> hex end) end)
+      |> Kernel.++(Images.blob_refs())
+      |> MapSet.new()
+      |> Cache.prune_blobs!()
+
+      if Process.whereis(__MODULE__),
+        do: :persistent_term.erase(@cold_cache_key),
+        else: :persistent_term.put(@cold_cache_key, {cache_signature(), manifest})
 
       :ok
     end
@@ -546,7 +595,7 @@ defmodule PhoenixAssetPipeline.Manifest do
     Cache.write_atomic!(path, binary)
     register_precompiled_module!(path)
     {:module, @precompiled_module} = :code.load_binary(@precompiled_module, String.to_charlist(path), binary)
-
+    Cache.prune_blobs!(MapSet.new(Images.blob_refs()))
     path
   end
 
@@ -645,7 +694,6 @@ defmodule PhoenixAssetPipeline.Manifest do
 
   defp encoded_assets_valid?(_, _), do: false
 
-  # Digested assets store {content, size}; static files add their ETag.
   defp encoded_entry_valid?({encoding, entry}, entry_size)
        when encoding in @encodings and tuple_size(entry) == entry_size do
     content = elem(entry, 0)

@@ -1,5 +1,38 @@
 # Changelog
 
+## 7.0.0
+
+### Breaking changes
+
+- Store class metadata in module attributes instead of injecting `class_names/0` and other functions into modules that use `PhoenixAssetPipeline.HTML.Macros`
+- Drop `menu_icon` scanning for sprite icons
+- Fail the build for files under `priv/static/assets/{css,img,js,svg}` and SVG files directly in `assets/svg/sprites`
+- Remove all HTML comments, including IE conditional comments, unless `:debug_heex_annotations` is enabled
+- Prefix the `Reporting-Endpoints` URL with the endpoint path
+- Use the nearest directory with `mix.exs` above `:assets_dir` as the project root
+- Keep backslashes in asset paths
+
+### Enhancements
+
+- Exchange Bun build data through files, so output from Tailwind plugins no longer breaks builds or the formatter
+- Build cold Bun caches once and track TypeScript `paths` and `extends` targets precisely
+- Lock Bun installs, image generation, and manifest rebuilds across OS processes
+- Store image bytes once in a verified content-addressed cache, shrinking the development manifest
+- Limit Bun downloads in time and size and cap the zstd window at 8 MiB
+- Keep LiveView debug annotations when `:debug_heex_annotations` is enabled
+
+### Bug fixes
+
+- Keep Tailwind CSS for classes rewritten by the formatter and format classes inside `phx-no-curly-interpolation` elements
+- Document installing the CSP header in the endpoint, so router error pages are not turned into empty 500 responses
+- Collect `image_attrs(...).src` references and keep component attributes literal when scanning images and icons
+- Minify only HEEx statics and give minified templates their own LiveView fingerprints
+- Check `class/1` literals in `++` and `[head | tail]`, per choice branch, and through aliases
+- Pick sprite sources independently of their order and report the configured path for a missing icon
+- Parse `srcset`, `If-Match` and early hint parameters correctly
+- Rename classes inside `:host-context()` and keep unsupported `@supports selector()` probes
+- Fail the build when a static file is replaced while it is read
+
 ## 6.0.0
 
 ### Breaking changes

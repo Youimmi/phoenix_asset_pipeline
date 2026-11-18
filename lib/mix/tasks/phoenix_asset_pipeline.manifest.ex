@@ -22,6 +22,6 @@ defmodule Mix.Tasks.PhoenixAssetPipeline.Manifest do
       Mix.Task.run("compile")
     end)
 
-    PhoenixAssetPipelineCompiler.save_manifest(PhoenixAssetPipeline.build())
+    PhoenixAssetPipeline.with_run_lock(fn -> PhoenixAssetPipelineCompiler.save_manifest(PhoenixAssetPipeline.build()) end)
   end
 end

@@ -1,13 +1,15 @@
 defmodule PhoenixAssetPipeline.Bun do
   @moduledoc false
 
+  alias PhoenixAssetPipeline.Cache
   alias PhoenixAssetPipeline.Config
 
   @ensured_key {__MODULE__, :ensured}
   @execute_mask if(match?({:win32, _}, :os.type()), do: 0, else: 0o111)
   @fingerprint_chunk_size 1024 * 1024
   @fingerprint_key {__MODULE__, :fingerprint}
-  @install_lock {__MODULE__, :install}
+  @httpc_profile :phoenix_asset_pipeline_bun
+  @max_archive_bytes 268_435_456
   @version "1.4.4"
 
   @checksums Map.new(
@@ -69,8 +71,10 @@ defmodule PhoenixAssetPipeline.Bun do
   """
 
   def bin_path do
-    Application.get_env(:phoenix_asset_pipeline, :bun_path) ||
-      Path.join(Path.dirname(Config.build_path()), executable_name())
+    Path.expand(
+      Application.get_env(:phoenix_asset_pipeline, :bun_path) ||
+        Path.join(Path.dirname(Config.build_path()), executable_name())
+    )
   end
 
   def ensure! do
@@ -84,7 +88,7 @@ defmodule PhoenixAssetPipeline.Bun do
     if ensured?(fingerprint) do
       fingerprint
     else
-      :global.trans({@install_lock, self()}, &ensure_once!/0, [node()], :infinity)
+      Cache.with_lock("bun #{bin_path()}", &ensure_once!/0)
     end
   end
 
@@ -109,21 +113,31 @@ defmodule PhoenixAssetPipeline.Bun do
     proxy = proxy()
 
     {:ok, _} = Application.ensure_all_started([:inets, :ssl])
-    configure_proxy(proxy)
 
-    case :httpc.request(:get, {String.to_charlist(url), []}, http_options(proxy),
-           body_format: :binary,
-           max_header_size: 65_536
-         ) do
-      {:ok, {{_, 200, _}, _, body}} ->
-        {archive_checksum, _} = Map.fetch!(@checksums, target)
-        verify_checksum!(body, archive_checksum, "Bun archive #{url}")
+    case :inets.start(:httpc, profile: @httpc_profile) do
+      {:ok, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+    end
 
-      {:ok, {{_, status, _}, _, body}} ->
-        raise "could not download Bun #{@version}: #{url} returned #{status}\n#{body}"
+    try do
+      configure_proxy(proxy)
 
-      {:error, reason} ->
-        raise "could not download Bun #{@version}: #{inspect(reason)}"
+      case :httpc.request(
+             :get,
+             {String.to_charlist(url), []},
+             http_options(proxy),
+             [body_format: :binary, max_header_size: 65_536, stream: :self, sync: false],
+             @httpc_profile
+           ) do
+        {:ok, request} ->
+          {archive_checksum, _} = Map.fetch!(@checksums, target)
+          request |> receive_archive!(url, [], 0) |> verify_checksum!(archive_checksum, "Bun archive #{url}")
+
+        {:error, reason} ->
+          raise "could not download Bun #{@version}: #{inspect(reason)}"
+      end
+    after
+      :inets.stop(:httpc, @httpc_profile)
     end
   end
 
@@ -140,7 +154,7 @@ defmodule PhoenixAssetPipeline.Bun do
   defp configure_proxy(nil), do: :ok
 
   defp configure_proxy(%{host: host, port: port}) do
-    :httpc.set_options(https_proxy: {{to_charlist(host), port || 443}, []})
+    :ok = :httpc.set_options([https_proxy: {{to_charlist(host), port || 443}, []}], @httpc_profile)
   end
 
   defp ensure_once! do
@@ -149,8 +163,7 @@ defmodule PhoenixAssetPipeline.Bun do
     if ensured?(fingerprint) do
       fingerprint
     else
-      :ok = ensure_unlocked!()
-      fingerprint = fingerprint()
+      fingerprint = {bin_path(), @version, ensure_unlocked!()}
       :persistent_term.put(@ensured_key, fingerprint)
       fingerprint
     end
@@ -160,12 +173,13 @@ defmodule PhoenixAssetPipeline.Bun do
     {_, expected} = Map.fetch!(@checksums, target())
 
     case executable_fingerprint(bin_path()) do
-      {:sha256, mode, ^expected}
+      {:sha256, mode, ^expected} = fingerprint
       when @execute_mask == 0 or Bitwise.band(mode, @execute_mask) != 0 ->
-        :ok
+        fingerprint
 
       {:sha256, _, ^expected} when install? ->
         File.chmod!(bin_path(), 0o755)
+        ensure_unlocked!(false)
 
       _ when install? ->
         :ok = install!()
@@ -231,6 +245,8 @@ defmodule PhoenixAssetPipeline.Bun do
   defp http_options(proxy) do
     proxy_auth(proxy) ++
       [
+        connect_timeout: 30_000,
+        timeout: 600_000,
         ssl:
           [
             verify: :verify_peer,
@@ -279,6 +295,30 @@ defmodule PhoenixAssetPipeline.Bun do
   end
 
   defp proxy_auth(_), do: []
+
+  defp receive_archive!(request, url, chunks, size) do
+    receive do
+      {:http, {^request, :stream_start, _}} ->
+        receive_archive!(request, url, chunks, size)
+
+      {:http, {^request, :stream, chunk}} when size + byte_size(chunk) <= @max_archive_bytes ->
+        receive_archive!(request, url, [chunk | chunks], size + byte_size(chunk))
+
+      {:http, {^request, :stream, _}} ->
+        :ok = :httpc.cancel_request(request, @httpc_profile)
+        raise "could not download Bun #{@version}: #{url} exceeded #{@max_archive_bytes} bytes"
+
+      {:http, {^request, :stream_end, _}} ->
+        chunks |> :lists.reverse() |> IO.iodata_to_binary()
+
+      {:http, {^request, {{_, status, _}, _, body}}} ->
+        raise "could not download Bun #{@version}: #{url} returned #{status}\n" <>
+                binary_part(body, 0, min(byte_size(body), 1024))
+
+      {:http, {^request, {:error, reason}}} ->
+        raise "could not download Bun #{@version}: #{inspect(reason)}"
+    end
+  end
 
   defp target do
     arch =

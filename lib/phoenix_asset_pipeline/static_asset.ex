@@ -10,7 +10,7 @@ defmodule PhoenixAssetPipeline.StaticAsset do
     {"br", {:brotli, 11}},
     {"deflate", {:zlib, 15, 9}},
     {"gzip", {:zlib, 31, 9}},
-    {"zstd", {:zstd, 22}}
+    {"zstd", {:zstd, 22, 23}}
   ]
   @encoding_names Enum.map(@encoders, &elem(&1, 0))
   @encodings if Config.precompiled_manifest?(), do: @encoders, else: []
@@ -71,9 +71,9 @@ defmodule PhoenixAssetPipeline.StaticAsset do
 
   defp encode(content, {:brotli, quality}), do: Native.compress(content, quality)
 
-  defp encode(content, {:zstd, level}) do
+  defp encode(content, {:zstd, level, window_log}) do
     content
-    |> :zstd.compress(%{compressionLevel: level})
+    |> :zstd.compress(%{compressionLevel: level, windowLog: window_log})
     |> IO.iodata_to_binary()
   end
 

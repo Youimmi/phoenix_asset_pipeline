@@ -11,7 +11,7 @@ defmodule Mix.Tasks.Compile.PhoenixAssetPipeline do
   def run(_) do
     if :persistent_term.get(@compiler_disabled_key, 0) > 0,
       do: {:noop, []},
-      else: :global.trans({{PhoenixAssetPipeline, :run}, self()}, &compile/0, [node()], :infinity)
+      else: PhoenixAssetPipeline.with_run_lock(&compile/0)
   end
 
   if PhoenixAssetPipeline.Config.precompiled_manifest?() do

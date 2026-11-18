@@ -1,6 +1,7 @@
 defmodule PhoenixAssetPipeline.Images.Generator do
   @moduledoc false
 
+  alias PhoenixAssetPipeline.Cache
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.Files
   alias PhoenixAssetPipeline.Images.PNG
@@ -19,19 +20,16 @@ defmodule PhoenixAssetPipeline.Images.Generator do
       raise ArgumentError, "output and temporary directories must be inside assets and separate from originals"
     end
 
-    Mix.Project.with_build_lock(fn ->
-      separate_directories!(source, destinations, project)
-      paths = template_paths!(options, project, destinations)
-      recover!(staging, output)
-      # Recovery can restore directories that were absent, so aliases are checked again.
-      separate_directories!(source, destinations, project)
-      Enum.each(paths, &Files.regular_file!(&1, project))
-      references = References.scan!(paths)
-      if references == [], do: raise(ArgumentError, "no picture references found; output was not replaced")
-      resolver = Keyword.get(options, :resolve, fn src, false -> [{src <> ".png", src <> ".png"}] end)
-      entries = entries!(references, resolver, source)
-      generate_entries!(entries, output, staging)
-    end)
+    job = %{
+      destinations: destinations,
+      options: options,
+      output: output,
+      project: project,
+      source: source,
+      staging: staging
+    }
+
+    Mix.Project.with_build_lock(fn -> Cache.with_lock("images #{project}", fn -> generate_locked!(job) end) end)
   end
 
   defp contains_identity?(nil, _), do: false
@@ -101,6 +99,33 @@ defmodule PhoenixAssetPipeline.Images.Generator do
     end
   end
 
+  defp generate_locked!(%{
+         destinations: destinations,
+         options: options,
+         output: output,
+         project: project,
+         source: source,
+         staging: staging
+       }) do
+    separate_directories!(source, destinations, project)
+    paths = template_paths!(options, project, destinations)
+
+    paths =
+      if recover!(staging, output) do
+        separate_directories!(source, destinations, project)
+        template_paths!(options, project, destinations)
+      else
+        paths
+      end
+
+    Enum.each(paths, &Files.regular_file!(&1, project))
+    references = References.scan!(paths)
+    if references == [], do: raise(ArgumentError, "no picture references found; output was not replaced")
+    resolver = Keyword.get(options, :resolve, fn src, false -> [{src <> ".png", src <> ".png"}] end)
+    entries = entries!(references, resolver, source)
+    generate_entries!(entries, output, staging)
+  end
+
   defp overlap?(left, right) do
     left == right or within?(left, right) or within?(right, left) or
       contains_identity?(file_identity(left), right) or contains_identity?(file_identity(right), left)
@@ -122,11 +147,16 @@ defmodule PhoenixAssetPipeline.Images.Generator do
     backup = staging <> ".previous"
     Enum.each([staging, backup, output], &directory!(&1, Path.dirname(output)))
 
-    if File.dir?(backup) do
-      if File.exists?(output), do: File.rm_rf!(backup), else: File.rename!(backup, output)
+    restored? = File.dir?(backup) and not File.exists?(output)
+
+    cond do
+      restored? -> File.rename!(backup, output)
+      File.dir?(backup) -> File.rm_rf!(backup)
+      true -> :ok
     end
 
     File.rm_rf!(staging)
+    restored?
   end
 
   defp relative_png!(path) do

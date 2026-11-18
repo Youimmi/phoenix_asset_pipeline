@@ -10,6 +10,12 @@ defmodule PhoenixAssetPipeline.HTML.Tailwind do
   import {dirname} from "node:path";
   import {createInterface} from "node:readline";
 
+  const nonce = process.env.PHOENIX_ASSET_PIPELINE_NONCE;
+  const write = process.stdout.write.bind(process.stdout);
+  const respond = (reply) => write(`\n${nonce}${JSON.stringify(reply)}\n`);
+  process.stdout.write = process.stderr.write.bind(process.stderr);
+  console.debug = console.info = console.log = console.error;
+
   let current;
   let design;
   let dependencies = new Map();
@@ -28,7 +34,7 @@ defmodule PhoenixAssetPipeline.HTML.Tailwind do
       current = stylesheet;
     }
 
-    console.log(JSON.stringify(candidates.flatMap(candidate => design.canonicalizeCandidates([candidate]))));
+    respond(candidates.flatMap(candidate => design.canonicalizeCandidates([candidate])));
   }
   """
 
@@ -47,38 +53,43 @@ defmodule PhoenixAssetPipeline.HTML.Tailwind do
   end
 
   @impl true
-  def handle_call({stylesheet, classes}, _, port) do
+  def handle_call({stylesheet, classes}, _, {port, nonce} = state) do
     Port.command(port, [JSON.encode!([stylesheet, classes]), "\n"])
-    {:reply, read_response(port, []), port}
+    {:reply, read_response(port, nonce, []), state}
   end
 
   @impl true
-  def handle_info({port, {:exit_status, status}}, port) do
-    {:stop, {:tailwind_exit, status}, port}
+  def handle_info({port, {:exit_status, status}}, {port, _} = state) do
+    {:stop, {:tailwind_exit, status}, state}
   end
 
   @impl true
   def init(_) do
     Bun.ensure!()
+    nonce = 16 |> :crypto.strong_rand_bytes() |> Base.encode16()
 
     port =
       Port.open({:spawn_executable, Bun.bin_path()}, [
         :binary,
         :exit_status,
         {:line, 1_048_576},
-        {:args, ["--no-orphans", "--eval", @script]}
+        {:args, ["--no-orphans", "--eval", @script]},
+        {:env, [{~c"PHOENIX_ASSET_PIPELINE_NONCE", String.to_charlist(nonce)}]}
       ])
 
-    {:ok, port}
+    {:ok, {port, nonce}}
   end
 
-  defp read_response(port, parts) do
+  defp read_response(port, nonce, parts) do
     receive do
       {^port, {:data, {:noeol, part}}} ->
-        read_response(port, [part | parts])
+        read_response(port, nonce, [part | parts])
 
       {^port, {:data, {:eol, part}}} ->
-        [part | parts] |> Enum.reverse() |> IO.iodata_to_binary() |> JSON.decode!()
+        case [part | parts] |> Enum.reverse() |> IO.iodata_to_binary() do
+          <<^nonce::binary-size(32), reply::binary>> -> JSON.decode!(reply)
+          _ -> read_response(port, nonce, [])
+        end
 
       {^port, {:exit_status, status}} ->
         raise "Tailwind formatter exited with status #{status}"

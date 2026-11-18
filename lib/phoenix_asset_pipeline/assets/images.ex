@@ -15,50 +15,45 @@ defmodule PhoenixAssetPipeline.Assets.Images do
   @avif_1x_options [Q: 82] ++ @avif_options
   @avif_high_density_options [Q: 55] ++ @avif_options
   @webp_options [Q: 88, keep: [:VIPS_FOREIGN_KEEP_NONE]]
-  # Bump the version when the variants change for a reason the options do not show.
-  @encoding {1, @png_options, @avif_1x_options, @avif_high_density_options, @webp_options}
+  @encoding {2, @png_options, @avif_1x_options, @avif_high_density_options, @webp_options}
+
+  def blob_refs do
+    cache_path()
+    |> Cache.read_map(cache_fingerprint())
+    |> Enum.flat_map(fn {_, refs} -> Enum.flat_map(refs, fn {_, png, avif, webp} -> [png, avif, webp] end) end)
+  end
 
   def build(assets_dir, asset_terms) do
     cache = Cache.read_map(cache_path(), cache_fingerprint())
 
-    {sources, missing, next_cache} =
-      Enum.reduce(asset_terms, {[], %{}, %{}}, fn
-        {:asset, "img/" <> relative, digest}, {sources, missing, next_cache} ->
-          case source?(relative) and Map.fetch(cache, digest) do
-            {:ok, variants} ->
-              {[{relative, digest} | sources], missing, Map.put(next_cache, digest, variants)}
+    {sources, variants, next_cache, changed} =
+      Enum.reduce(asset_terms, {[], %{}, %{}, []}, fn
+        {:asset, "img/" <> relative, digest}, {sources, variants, next_cache, changed} = acc ->
+          cond do
+            not source?(relative) ->
+              acc
 
-            :error ->
-              path = Path.join([assets_dir, "img", relative])
+            Map.has_key?(variants, digest) ->
+              {[{relative, digest} | sources], variants, next_cache, changed}
 
-              {[{relative, digest} | sources], Map.put_new(missing, digest, path), next_cache}
+            true ->
+              {contents, refs, changed} = image_variants(assets_dir, relative, digest, cache, changed)
 
-            false ->
-              {sources, missing, next_cache}
+              {[{relative, digest} | sources], Map.put(variants, digest, contents), Map.put(next_cache, digest, refs),
+               changed}
           end
 
-        _, state ->
-          state
+        _, acc ->
+          acc
       end)
 
-    # A file rewritten after the snapshot is rebuilt by the caller's consistency pass,
-    # so its variants serve this build only and stay out of the cache.
-    {next_cache, changed} =
-      Enum.reduce(missing, {next_cache, []}, fn {digest, path}, {next_cache, changed} ->
-        content = File.read!(path)
-        changed = if Digest.binary(content) == digest, do: changed, else: [digest | changed]
-
-        {Map.put(next_cache, digest, image_assets(path, content)), changed}
-      end)
-
-    if map_size(missing) != 0 or map_size(cache) != map_size(next_cache) do
-      Cache.write_term!(cache_path(), {cache_fingerprint(), Map.drop(next_cache, changed)})
-    end
+    next_cache = Map.drop(next_cache, changed)
+    if next_cache != cache, do: Cache.write_term!(cache_path(), {cache_fingerprint(), next_cache})
 
     assets =
       sources
       |> Enum.reduce([], fn {relative, digest}, assets ->
-        prepend_assets(assets, Map.fetch!(next_cache, digest), relative)
+        prepend_assets(assets, Map.fetch!(variants, digest), relative)
       end)
       |> Enum.sort()
 
@@ -89,6 +84,17 @@ defmodule PhoenixAssetPipeline.Assets.Images do
   end
 
   defp cache_path, do: Path.join(Config.manifest_cache_dir(), @cache_file)
+
+  defp cached_variants(cache, digest) do
+    with {:ok, refs} <- Map.fetch(cache, digest) do
+      {:ok, refs,
+       Enum.map(refs, fn {density, png, avif, webp} ->
+         {density, Cache.read_blob!(png), Cache.read_blob!(avif), Cache.read_blob!(webp)}
+       end)}
+    end
+  rescue
+    File.Error -> :error
+  end
 
   defp ensure_pixel_limit!(image, path) do
     pixels = Image.width(image) * Image.height(image)
@@ -128,6 +134,25 @@ defmodule PhoenixAssetPipeline.Assets.Images do
         variant |> Image.write_to_buffer(".webp", @webp_options) |> ok!("write .webp image")
       }
     end)
+  end
+
+  defp image_variants(assets_dir, relative, digest, cache, changed) do
+    case cached_variants(cache, digest) do
+      {:ok, refs, contents} ->
+        {contents, refs, changed}
+
+      :error ->
+        path = Path.join([assets_dir, "img", relative])
+        content = File.read!(path)
+        contents = image_assets(path, content)
+
+        refs =
+          Enum.map(contents, fn {density, png, avif, webp} ->
+            {density, Cache.put_blob!(png), Cache.put_blob!(avif), Cache.put_blob!(webp)}
+          end)
+
+        {contents, refs, if(Digest.binary(content) == digest, do: changed, else: [digest | changed])}
+    end
   end
 
   defp ok!({:ok, value}, _), do: value

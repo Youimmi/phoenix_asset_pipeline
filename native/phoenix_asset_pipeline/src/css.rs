@@ -5,7 +5,10 @@ use cssparser::{ParseError, ParseErrorKind, Parser, SourcePosition, Token};
 use lightningcss::{
     declaration::DeclarationBlock,
     printer::{Printer, PrinterOptions},
-    properties::{Property, PropertyId},
+    properties::{
+        Property, PropertyId,
+        custom::{Token as CssToken, TokenOrValue},
+    },
     rules::{CssRule, CssRuleList, supports::SupportsCondition},
     selector::{Component, PseudoClass, PseudoElement, Selector},
     stylesheet::{MinifyOptions, ParserOptions, StyleSheet},
@@ -124,7 +127,11 @@ impl SelectorClassProcessor {
         let start = parser.position();
         parser.skip_whitespace();
         let value_start = parser.position();
-        let value = parser.expect_ident_or_string()?.clone();
+        let Ok(value) = parser.try_parse(|parser| parser.expect_ident_or_string().cloned()) else {
+            while parser.next_including_whitespace_and_comments().is_ok() {}
+            output.push_str(parser.slice_from(start));
+            return Ok(());
+        };
         let text = parser.slice_from(value_start);
         let value_end = parser.position();
         let case_sensitivity = match parser.try_parse(Parser::expect_ident_cloned) {
@@ -154,8 +161,6 @@ impl SelectorClassProcessor {
         Ok(())
     }
 
-    // Copies the tokens of an `@supports selector()` argument as written and marks its classes.
-    // Returns where the enclosing block ends, so its closing bracket is copied as written too.
     fn mark_supports_selector(
         &mut self,
         parser: &mut Parser<'_>,
@@ -335,6 +340,11 @@ impl SelectorClassProcessor {
             | Component::Has(selectors) => self.process_selectors(selectors, depth)?,
             Component::Slotted(selector) => self.process_selector(selector, depth + 1)?,
             Component::Host(Some(selector)) => self.process_selector(selector, depth + 1)?,
+            Component::NonTSPseudoClass(PseudoClass::CustomFunction { name, arguments })
+                if name.eq_ignore_ascii_case("host-context") =>
+            {
+                self.process_host_context(&mut arguments.0)?;
+            }
             Component::NthOf(nth) => {
                 let nth_data = *nth.nth_data();
                 let mut selectors = nth.clone_selectors();
@@ -353,6 +363,87 @@ impl SelectorClassProcessor {
 
         Ok(())
     }
+    fn process_host_context(&mut self, tokens: &mut [TokenOrValue<'_>]) -> Result<(), String> {
+        for index in 0..tokens.len() {
+            match tokens[index] {
+                TokenOrValue::Token(CssToken::Delim('.')) => {
+                    if let Some(TokenOrValue::Token(CssToken::Ident(name))) =
+                        tokens.get_mut(index + 1)
+                    {
+                        *name = self.class_marker(name.as_ref()).0;
+                    }
+                }
+                TokenOrValue::Token(CssToken::SquareBracketBlock) => {
+                    self.process_host_context_attribute(tokens, index + 1)?;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn process_host_context_attribute(
+        &mut self,
+        tokens: &mut [TokenOrValue<'_>],
+        start: usize,
+    ) -> Result<(), String> {
+        let Some(name) = next_token(tokens, start) else {
+            return Ok(());
+        };
+        let Some(operator) = next_token(tokens, name + 1) else {
+            return Ok(());
+        };
+
+        if matches!(tokens[operator], TokenOrValue::Token(CssToken::Delim('|'))) {
+            return match next_token(tokens, operator + 1).map(|index| &tokens[index]) {
+                Some(TokenOrValue::Token(CssToken::Ident(local)))
+                    if local.eq_ignore_ascii_case("class") =>
+                {
+                    Err("namespaced CSS class attribute selectors cannot be obfuscated".to_owned())
+                }
+                _ => Ok(()),
+            };
+        }
+
+        if !matches!(&tokens[name], TokenOrValue::Token(CssToken::Ident(name)) if name.eq_ignore_ascii_case("class"))
+        {
+            return Ok(());
+        }
+
+        let operator_kind = match tokens[operator] {
+            TokenOrValue::Token(CssToken::Delim('=')) => AttrSelectorOperator::Equal,
+            TokenOrValue::Token(CssToken::IncludeMatch) => AttrSelectorOperator::Includes,
+            TokenOrValue::Token(CssToken::DashMatch) => AttrSelectorOperator::DashMatch,
+            TokenOrValue::Token(CssToken::PrefixMatch) => AttrSelectorOperator::Prefix,
+            TokenOrValue::Token(CssToken::SuffixMatch) => AttrSelectorOperator::Suffix,
+            TokenOrValue::Token(CssToken::SubstringMatch) => AttrSelectorOperator::Substring,
+            _ => return Ok(()),
+        };
+        let Some(value) = next_token(tokens, operator + 1) else {
+            return Ok(());
+        };
+        let case_sensitivity = match next_token(tokens, value + 1).map(|index| &tokens[index]) {
+            Some(TokenOrValue::Token(CssToken::Ident(flag))) if flag.eq_ignore_ascii_case("i") => {
+                ParsedCaseSensitivity::AsciiCaseInsensitive
+            }
+            Some(TokenOrValue::Token(CssToken::Ident(flag))) if flag.eq_ignore_ascii_case("s") => {
+                ParsedCaseSensitivity::ExplicitCaseSensitive
+            }
+            _ => ParsedCaseSensitivity::CaseSensitive,
+        };
+
+        if let TokenOrValue::Token(CssToken::String(text) | CssToken::Ident(text)) =
+            &mut tokens[value]
+        {
+            let mut class_value = CSSString(text.clone());
+            self.process_attribute_classes(operator_kind, case_sensitivity, &mut class_value)?;
+            *text = class_value.0;
+        }
+
+        Ok(())
+    }
+
     fn process_selector(
         &mut self,
         selector: &mut Selector<'_>,
@@ -470,7 +561,6 @@ fn class_marker_prefix() -> String {
     format!("{CLASS_MARKER_BASE}{first:016x}{second:016x}_")
 }
 
-// Counts each custom property and whether this stylesheet declares it.
 fn collect_custom_properties(css: &str) -> Vec<(String, usize, bool)> {
     let bytes = css.as_bytes();
     let mut counts = AHashMap::new();
@@ -575,7 +665,6 @@ fn custom_property_context(
         || (context.property_references && listed_property(bytes, index, stop))
 }
 
-// Whether a declaration or an `@property` rule defines the property here.
 fn custom_property_declared(bytes: &[u8], index: usize, stop: usize) -> bool {
     let previous = previous_non_whitespace(bytes, index);
 
@@ -608,7 +697,6 @@ fn custom_property_end(bytes: &[u8], index: usize) -> Option<usize> {
     Some(stop)
 }
 
-// The property a declaration colon belongs to, or nothing when the colon is not a declaration's.
 fn declared_property(bytes: &[u8], colon: usize) -> &[u8] {
     let Some(end) = previous_non_whitespace(bytes, colon) else {
         return &[];
@@ -773,7 +861,6 @@ fn finalize_css<'a>(
     }
 }
 
-// A dashed identifier standing as an item of a declaration value.
 fn listed_property(bytes: &[u8], index: usize, stop: usize) -> bool {
     index > 0
         && (css_whitespace(bytes[index - 1]) || matches!(bytes[index - 1], b':' | b','))
@@ -813,7 +900,6 @@ fn modern_supports(condition: &SupportsCondition) -> bool {
     }
 }
 
-// Rule lists nested in a rule, except `@supports`, which callers handle themselves.
 fn nested_rules<'a, 'i>(rule: &'a mut CssRule<'i>) -> Option<&'a mut CssRuleList<'i>> {
     match rule {
         CssRule::Container(rule) => Some(&mut rule.rules),
@@ -824,6 +910,11 @@ fn nested_rules<'a, 'i>(rule: &'a mut CssRule<'i>) -> Option<&'a mut CssRuleList
         CssRule::Style(rule) => Some(&mut rule.rules),
         _ => None,
     }
+}
+
+fn next_token(tokens: &[TokenOrValue<'_>], start: usize) -> Option<usize> {
+    (start..tokens.len())
+        .find(|&index| !matches!(tokens[index], TokenOrValue::Token(CssToken::WhiteSpace(_))))
 }
 
 fn prepare_css(raw_css: &str) -> Result<PreparedCss, String> {
@@ -969,6 +1060,10 @@ fn remove_modern_fallbacks(rules: &mut CssRuleList<'_>) {
 }
 
 fn skip_css_literal(bytes: &[u8], index: usize) -> Option<usize> {
+    if bytes[index] == b'\\' {
+        return Some((index + 2).min(bytes.len()));
+    }
+
     if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
         let mut cursor = index + 2;
 
@@ -1027,7 +1122,6 @@ fn skip_css_whitespace(bytes: &[u8], mut index: usize) -> usize {
     index
 }
 
-// True when one condition satisfies `supported` and another is a negation satisfying `unsupported`.
 fn supports_pair(
     conditions: &[SupportsCondition],
     supported: impl Fn(&PropertyId, &str) -> bool,

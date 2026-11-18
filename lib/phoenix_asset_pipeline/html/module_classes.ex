@@ -91,18 +91,15 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
 
   defp class_base(class_name), do: ClassNames.prefix(class_name)
 
-  defp class_call_args({:class, _, args}) when is_list(args), do: args
+  defp class_call_args({:class, _, args}, _) when is_list(args), do: args
 
-  defp class_call_args({{:., _, [{:__aliases__, _, [:PhoenixAssetPipeline, :HTML, :Macros]}, :class]}, _, args})
-       when is_list(args), do: args
-
-  defp class_call_args(_), do: nil
-
-  defp class_entry_counts({:{}, _, [truthy, falsy, condition]}, counts) do
-    class_entry_counts({truthy, falsy, condition}, counts)
+  defp class_call_args({{:., _, [{:__aliases__, _, parts}, :class]}, _, args}, aliases) when is_list(args) do
+    if expand_alias(aliases, parts) == [:PhoenixAssetPipeline, :HTML, :Macros], do: args
   end
 
-  defp class_entry_counts({truthy, falsy, condition}, counts) do
+  defp class_call_args(_, _), do: nil
+
+  defp class_entry_counts({:{}, _, [truthy, falsy, condition]}, counts) do
     cond do
       not (ClassNames.literal?(truthy) and ClassNames.literal?(falsy)) -> counts
       condition == true -> class_group_counts(truthy, counts)
@@ -151,17 +148,19 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
   defp decode_scan_cache(files) when is_map(files), do: {:ok, files}
   defp decode_scan_cache(_), do: :error
 
-  defp file_counts(path, cached_files) do
-    content = File.read!(path)
-    signature = Digest.binary(content)
+  defp expand_alias(aliases, [first | rest]), do: Map.get(aliases, first, [first]) ++ rest
+
+  defp file_counts(path, stat, cached_files, now) do
+    signature = {stat.size, stat.mtime, stat.ctime, stat.inode, stat.major_device}
 
     case cached_files do
       %{^path => {^signature, counts}} when is_map(counts) ->
         {{signature, counts}, counts}
 
       _ ->
-        counts = content |> Code.string_to_quoted!(file: path) |> scan_ast(%{})
-        {{signature, counts}, counts}
+        {counts, _} = path |> File.read!() |> Code.string_to_quoted!(file: path) |> scan_ast({%{}, %{}})
+        settled? = stat.inode != 0 and max(stat.mtime, stat.ctime) < now
+        {{if(settled?, do: signature, else: :unsettled), counts}, counts}
     end
   end
 
@@ -212,22 +211,76 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
 
   defp project_app, do: to_string(Config.mix_project(& &1[:app]) || Config.otp_app())
 
-  defp scan_ast({form, _, _}, counts) when form in [:def, :defp, :defmacro, :defmacrop, :defguard, :defguardp] do
-    counts
-  end
+  defp put_alias(aliases, directive, parts, opts) do
+    name =
+      case opts do
+        [[_ | _] = options] ->
+          case options[:as] do
+            {:__aliases__, _, [as]} -> as
+            _ -> nil
+          end
 
-  defp scan_ast({:quote, _, _}, counts), do: counts
+        _ ->
+          nil
+      end
 
-  defp scan_ast(ast, counts) when is_tuple(ast) do
-    case class_call_args(ast) do
-      [classes | _] -> scan_class_entries(classes, counts)
-      _ -> ast |> Tuple.to_list() |> scan_ast(counts)
+    cond do
+      name -> Map.put(aliases, name, expand_alias(aliases, parts))
+      directive == :alias -> Map.put(aliases, List.last(parts), expand_alias(aliases, parts))
+      true -> aliases
     end
   end
 
-  defp scan_ast([node | nodes], counts), do: scan_ast(nodes, scan_ast(node, counts))
-  defp scan_ast([], counts), do: counts
-  defp scan_ast(_, counts), do: counts
+  defp scan_ast({form, _, _}, acc) when form in [:def, :defp, :defmacro, :defmacrop, :defguard, :defguardp, :quote] do
+    acc
+  end
+
+  defp scan_ast({:defmodule, _, [_, [do: body]]}, {_, aliases} = acc) do
+    {counts, _} = scan_ast(body, acc)
+    {counts, aliases}
+  end
+
+  defp scan_ast({directive, _, [{:__aliases__, _, parts} | opts]}, {counts, aliases})
+       when directive in [:alias, :require] do
+    {counts, put_alias(aliases, directive, parts, opts)}
+  end
+
+  defp scan_ast({:alias, _, [{{:., _, [{:__aliases__, _, base}, :{}]}, _, children}]}, {counts, aliases}) do
+    {counts,
+     Enum.reduce(children, aliases, fn
+       {:__aliases__, _, parts}, aliases -> put_alias(aliases, :alias, base ++ parts, [])
+       part, aliases when is_atom(part) -> put_alias(aliases, :alias, base ++ [part], [])
+       _, aliases -> aliases
+     end)}
+  end
+
+  defp scan_ast({:fn, _, clauses}, {counts, aliases}) do
+    {Enum.reduce(clauses, counts, &(&1 |> scan_ast({&2, aliases}) |> elem(0))), aliases}
+  end
+
+  defp scan_ast({callee, meta, [_ | _] = args} = ast, {counts, aliases} = acc) do
+    case {class_call_args(ast, aliases), List.last(args)} do
+      {[classes | _], _} ->
+        {scan_class_entries(classes, counts), aliases}
+
+      {_, [{:do, _} | _] = blocks} ->
+        {counts, _} = scan_ast([callee, meta | Enum.drop(args, -1)], acc)
+        {Enum.reduce(blocks, counts, &(&1 |> elem(1) |> scan_ast({&2, aliases}) |> elem(0))), aliases}
+
+      _ ->
+        ast |> Tuple.to_list() |> scan_ast(acc)
+    end
+  end
+
+  defp scan_ast(ast, {counts, aliases} = acc) when is_tuple(ast) do
+    case class_call_args(ast, aliases) do
+      [classes | _] -> {scan_class_entries(classes, counts), aliases}
+      _ -> ast |> Tuple.to_list() |> scan_ast(acc)
+    end
+  end
+
+  defp scan_ast([node | nodes], acc), do: scan_ast(nodes, scan_ast(node, acc))
+  defp scan_ast(_, acc), do: acc
 
   defp scan_class_entries(classes, counts) when is_list(classes) do
     Enum.reduce(classes, counts, &class_entry_counts/2)
@@ -235,21 +288,25 @@ defmodule PhoenixAssetPipeline.HTML.ModuleClasses do
 
   defp scan_class_entries(classes, counts), do: class_entry_counts(classes, counts)
 
-  defp scan_sources(cached_files) do
-    Enum.reduce(source_files(), {%{}, %{}}, fn path, {files, counts} ->
-      {record, file_counts} = file_counts(path, cached_files)
-      files = Map.put(files, path, record)
-      counts = Map.merge(counts, file_counts, fn _, left, right -> left + right end)
-      {files, counts}
-    end)
+  defp scan_source(path, stat, {files, counts} = acc, cached_files, now) do
+    if Path.extname(path) == ".ex" and not is_map_key(files, path) do
+      {record, file_counts} = file_counts(path, stat, cached_files, now)
+      {Map.put(files, path, record), Map.merge(counts, file_counts, fn _, left, right -> left + right end)}
+    else
+      acc
+    end
   end
 
-  defp source_files do
+  defp scan_sources(cached_files) do
+    now = System.os_time(:second)
+
     (Config.mix_project(& &1[:elixirc_paths]) || ["lib"])
-    |> Enum.flat_map(&Files.regular_files/1)
-    |> Enum.filter(&(Path.extname(&1) == ".ex"))
+    |> Enum.map(&Path.expand/1)
     |> Enum.uniq()
-    |> Enum.sort()
+    |> Enum.reduce(
+      {%{}, %{}},
+      &Files.reduce_regular_files(&1, &2, fn path, stat, acc -> scan_source(path, stat, acc, cached_files, now) end)
+    )
   end
 
   defp valid_mappings?(mappings) do

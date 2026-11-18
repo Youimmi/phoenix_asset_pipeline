@@ -66,14 +66,17 @@ defmodule PhoenixAssetPipeline.Plug do
 
                                    "; " <> Enum.join([directive | values], " ")
                                  end)
-  @content_security_policy Enum.map_join(@content_security_policy_directives, "; ", fn {directive, values} ->
-                             directive <> " " <> Enum.join(values, " ")
-                           end) <> @content_security_policy_extra
-  @content_security_policy_before_img_src "base-uri 'none'; default-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' "
-  @content_security_policy_before_script_src "; object-src 'none'; report-to default; require-trusted-types-for 'script'; script-src 'strict-dynamic'"
+  join_csp = fn directives -> Enum.map_join(directives, "; ", &Enum.join([elem(&1, 0) | elem(&1, 1)], " ")) end
+
+  {before_img_src, [img_src | after_img_src]} =
+    Enum.split_while(@content_security_policy_directives, &(elem(&1, 0) != "img-src"))
+
+  {before_script_src, [script_src, trusted_types]} = Enum.split_while(after_img_src, &(elem(&1, 0) != "script-src"))
+  @content_security_policy join_csp.(@content_security_policy_directives) <> @content_security_policy_extra
+  @content_security_policy_before_img_src join_csp.(before_img_src ++ [img_src]) <> " "
+  @content_security_policy_before_script_src "; " <> join_csp.(before_script_src ++ [script_src])
   @content_security_policy_style_src "; style-src"
-  @content_security_policy_trusted_types "; trusted-types " <>
-                                           Enum.join(@trusted_types, " ") <> @content_security_policy_extra
+  @content_security_policy_trusted_types "; " <> join_csp.([trusted_types]) <> @content_security_policy_extra
   @csp_skip_path_prefixes Application.compile_env(:phoenix_asset_pipeline, :csp_skip_path_prefixes, [["dev"]])
   @csp_skip_statuses :phoenix_asset_pipeline
                      |> Application.compile_env(:csp_skip_statuses, [])
@@ -220,11 +223,8 @@ defmodule PhoenixAssetPipeline.Plug do
   @doc """
   Adds a `Reporting-Endpoints` header for CSP reports.
   """
-  def put_reporting_endpoints(%{private: %{phoenix_router_url: url}} = conn, opts) do
-    report_uri =
-      opts
-      |> Keyword.get(:path, "/csp-report")
-      |> then(&URI.merge(url, &1))
+  def put_reporting_endpoints(%{private: %{phoenix_endpoint: endpoint, phoenix_router_url: url}} = conn, opts) do
+    report_uri = URI.merge(url, endpoint.path("/" <> String.trim_leading(Keyword.get(opts, :path, "/csp-report"), "/")))
 
     put_resp_header(conn, "reporting-endpoints", ~s(default="#{report_uri}"))
   end
@@ -232,7 +232,7 @@ defmodule PhoenixAssetPipeline.Plug do
   def put_reporting_endpoints(conn, _), do: conn
 
   @doc """
-  Returns secure browser headers suitable for Phoenix router pipelines.
+  Returns secure browser headers for `put_secure_browser_headers/2` in the endpoint.
 
   The `:trusted_types` application setting configures the policy allowlist at compile time.
   The `:csp_directives` application setting adds directives at compile time without
@@ -319,7 +319,6 @@ defmodule PhoenixAssetPipeline.Plug do
     )
   end
 
-  # A URL mirrored from the request host is not cached: every new host would replace the term.
   defp cached_header(endpoint, static_url, key, fingerprint, build) do
     if static_url == endpoint.static_url() do
       case :persistent_term.get(key, @header_cache_missing) do
@@ -375,9 +374,15 @@ defmodule PhoenixAssetPipeline.Plug do
   defp early_hint_attr({_, false}), do: []
   defp early_hint_attr({_, nil}), do: []
   defp early_hint_attr({name, true}), do: ["; ", to_string(name)]
-  defp early_hint_attr({name, value}), do: ["; ", to_string(name), "=", to_string(value)]
 
-  # The cache follows the endpoint configuration, which can change in a running node.
+  defp early_hint_attr({name, value}) do
+    value = to_string(value)
+
+    if value =~ ~r/\A[!#$%&'*+.^_`|~0-9A-Za-z-]+\z/,
+      do: ["; ", to_string(name), "=", value],
+      else: ["; ", to_string(name), "=\"", String.replace(value, ["\\", "\""], &("\\" <> &1)), ?"]
+  end
+
   defp endpoint_urls(endpoint) do
     key = {__MODULE__, :endpoint_urls, endpoint}
     static_url = endpoint.static_url()
@@ -444,7 +449,6 @@ defmodule PhoenixAssetPipeline.Plug do
     put_resp_header(conn, "content-security-policy", value)
   end
 
-  # Only DNS names and IP literals are mirrored into URLs and response headers.
   defp request_host?(<<byte, rest::binary>>)
        when byte in ?a..?z or byte in ?A..?Z or byte in ?0..?9 or byte in [?., ?-, ?:, ?[, ?]] do
     request_host?(rest)

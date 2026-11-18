@@ -6,7 +6,6 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   alias PhoenixAssetPipeline.Cache
   alias PhoenixAssetPipeline.Config
   alias PhoenixAssetPipeline.Digest
-  alias PhoenixAssetPipeline.Files
 
   @script ~S"""
   import path from "node:path";
@@ -14,10 +13,19 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
   const assetsDir = process.cwd();
   const outputDir = process.env.PHOENIX_ASSET_PIPELINE_OUTPUT_DIR;
-  const minifyJs = process.env.PHOENIX_ASSET_PIPELINE_MINIFY_JS === "1";
-  const entries = (name) => (process.env[name] || "").split("\n").filter(Boolean);
-  const dropJs = entries("PHOENIX_ASSET_PIPELINE_JS_DROP");
-  const buildSvg = process.env.PHOENIX_ASSET_PIPELINE_SVG === "1";
+  const {
+    css: cssEntries,
+    js: jsEntries,
+    jsDrop: dropJs,
+    minifyJs,
+    projectDir: requestProjectDir,
+    spriteGroups: spriteGroupEntries,
+    spriteSources: spriteSourceEntries,
+    stackSprites,
+    svg: buildSvg
+  } = await Bun.file(path.join(outputDir, "request.json")).json();
+  const projectDir = path.resolve(requestProjectDir);
+  const response = [];
   const svgoOptions = {
     multipass: true,
     plugins: [{
@@ -31,39 +39,17 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       }
     }]
   };
-  const spriteGroupEntries = [];
-  const spriteSourceEntries = [];
-
-  for (const line of entries("PHOENIX_ASSET_PIPELINE_SVG_SPRITE_SOURCES")) {
-    const fields = line.split("\t");
-
-    if (fields[0] === "g") {
-      const [, sprite, mode, namespaceIDs, metadataFile] = fields;
-      spriteGroupEntries.push({
-        sprite,
-        mode,
-        namespaceIDs: namespaceIDs === "1",
-        metadataFile: metadataFile || null
-      });
-    } else if (fields[0] === "s") {
-      const [, sprite, source, name] = fields;
-      spriteSourceEntries.push({ sprite, source, name });
-    } else {
-      throw new Error("Invalid SVG sprite manifest entry");
-    }
-  }
-
   let outputIndex = 0;
 
   const emit = async (group, filePath, content) => {
-    const outputName = String(outputIndex++);
+    const output = outputIndex++;
 
-    await Bun.write(path.join(outputDir, outputName), content);
-    process.stdout.write(`${group}\t${Buffer.from(filePath).toString("base64")}\t${outputName}\n`);
+    await Bun.write(path.join(outputDir, String(output)), content);
+    response.push({ group, path: filePath, output });
   };
 
   const emitDependency = (kind, source, group) => {
-    process.stdout.write(`${kind}\t${Buffer.from(typeof source === "string" ? source : JSON.stringify(source)).toString("base64")}\t${group}\n`);
+    response.push({ kind, source, group });
   };
 
   const exists = async (filePath) => {
@@ -75,7 +61,14 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     }
   };
 
-  const hiddenPath = (filePath) => filePath.split(/[\\/]+/).some((part) => part.startsWith("."));
+  const mapLimit = async (items, fn) => {
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) await fn(items[next++]);
+    };
+
+    await Promise.all(Array.from({ length: Math.min(items.length, navigator.hardwareConcurrency) }, worker));
+  };
 
   const inventoryPattern = (pattern) => pattern.endsWith("}")
     ? pattern.slice(0, -1) + ",gitignore}"
@@ -118,6 +111,8 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
     const dependencies = new Set();
     const directories = new Set();
+    const probes = new Set();
+    const specifiers = new Set();
 
     for (const file of checked.stdout.toString().split("\n")) {
       if (path.isAbsolute(file) && !file.split(path.sep).includes("node_modules")) dependencies.add(file);
@@ -132,8 +127,12 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       plugins: [{
         name: "phoenix-asset-dependencies",
         setup(build) {
-          build.onResolve({ filter: /^(?:\.{1,2}\/|\/)/ }, ({ path: specifier, resolveDir }) => {
-            directories.add(path.dirname(path.resolve(resolveDir, specifier)));
+          build.onResolve({ filter: /.*/ }, ({ path: specifier, resolveDir }) => {
+            if (/^(?:\.{1,2}\/|\/)/.test(specifier)) {
+              directories.add(path.dirname(path.resolve(resolveDir, specifier)));
+            } else if (!resolveDir.split(path.sep).includes("node_modules")) {
+              specifiers.add(specifier);
+            }
           });
         }
       }],
@@ -150,14 +149,13 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     const configs = new Set();
     const configDirs = new Map();
     const packageDirs = new Set();
-    const projectDir = path.dirname(assetsDir);
     const addPackages = async (dir) => {
       while (!packageDirs.has(dir)) {
         packageDirs.add(dir);
         const packagePath = path.join(dir, "package.json");
 
         if (dir === projectDir || dir.startsWith(projectDir + path.sep) || await Bun.file(packagePath).exists()) {
-          dependencies.add(packagePath);
+          probes.add(packagePath);
         }
 
         const parent = path.dirname(dir);
@@ -171,7 +169,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       for (const name of ["tsconfig.json", "jsconfig.json"]) {
         const configPath = path.join(dir, name);
         const present = await Bun.file(configPath).exists();
-        if (present || dir === projectDir || dir.startsWith(projectDir + path.sep)) dependencies.add(configPath);
+        if (present || dir === projectDir || dir.startsWith(projectDir + path.sep)) probes.add(configPath);
 
         if (present) {
           configDirs.set(dir, configPath);
@@ -184,15 +182,57 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       configDirs.set(dir, configPath);
       return configPath;
     };
+    const resolveConfig = async (base, dir) => {
+      if (base.startsWith(".") || path.isAbsolute(base)) {
+        const file = path.resolve(dir, base);
+        return file.endsWith(".json") || (await Bun.file(file).exists()) ? file : `${file}.json`;
+      }
+
+      try {
+        const resolved = Bun.resolveSync(base, dir);
+        if (path.extname(resolved).startsWith(".json")) return resolved;
+      } catch {}
+
+      try {
+        const packagePath = Bun.resolveSync(`${base}/package.json`, dir);
+        const { tsconfig = "tsconfig.json" } = await Bun.file(packagePath).json();
+        return path.resolve(path.dirname(packagePath), tsconfig);
+      } catch {
+        return Bun.resolveSync(`${base}.json`, dir);
+      }
+    };
     const addConfig = async (configPath) => {
       if (configs.has(configPath)) return;
       configs.add(configPath);
       dependencies.add(configPath);
 
       const config = Bun.JSONC.parse(await Bun.file(configPath).text());
+      const configDir = path.dirname(configPath);
+      const baseDir = path.resolve(configDir, config.compilerOptions?.baseUrl ?? ".");
       const bases = typeof config.extends === "string" ? [config.extends] : config.extends || [];
 
-      for (const base of bases) await addConfig(Bun.resolveSync(base, path.dirname(configPath)));
+      for (const [pattern, targets] of Object.entries(config.compilerOptions?.paths ?? {})) {
+        const [prefix, suffix = ""] = pattern.split("*");
+
+        for (const specifier of specifiers) {
+          const matched = pattern.includes("*")
+            ? specifier.startsWith(prefix) && specifier.endsWith(suffix) && specifier.length >= prefix.length + suffix.length
+            : specifier === pattern;
+          if (!matched) continue;
+
+          const star = specifier.slice(prefix.length, specifier.length - suffix.length);
+
+          for (const target of targets) {
+            const candidate = path.resolve(baseDir, target.replace("*", star));
+
+            for (const directory of [path.dirname(candidate), candidate]) {
+              if (directory.startsWith(projectDir + path.sep) || (await exists(directory))) directories.add(directory);
+            }
+          }
+        }
+      }
+
+      for (const base of bases) await addConfig(await resolveConfig(base, configDir));
     };
 
     for (const input of Object.keys(result.metafile.inputs)) {
@@ -201,13 +241,20 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       dependencies.add(inputPath);
     }
 
-    // Only source inputs make their directories dependencies.
+    for (const inputPath of dependencies) {
+      if (!/\.[cm]?tsx?$/.test(inputPath)) continue;
+
+      for (const [, specifier] of (await Bun.file(inputPath).text()).matchAll(/\b(?:import|export)\s+type\b[^;]*?\bfrom\s*["']([^"']+)["']/g)) {
+        if (/^(?:\.{1,2}\/|\/)/.test(specifier)) directories.add(path.dirname(path.resolve(path.dirname(inputPath), specifier)));
+        else specifiers.add(specifier);
+      }
+    }
+
     for (const inputPath of dependencies) {
       directories.add(path.dirname(inputPath));
       if (path.basename(inputPath).startsWith("index.")) directories.add(path.dirname(path.dirname(inputPath)));
     }
 
-    // The live set also visits package and config files added here, including extended configs.
     for (const inputPath of dependencies) {
       await addPackages(path.dirname(inputPath));
 
@@ -215,9 +262,8 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       if (configPath) await addConfig(configPath);
     }
 
-    dependencies.add(path.join(assetsDir, "bunfig.toml"));
-
     for (const dependency of dependencies) emitDependency("dependency", dependency, "js");
+    for (const probe of probes) if (!dependencies.has(probe)) emitDependency("probe", probe, "js");
     for (const directory of directories) emitDependency("directory", directory, "js");
 
     for (const artifact of result.outputs) {
@@ -258,14 +304,11 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     for (const { base, pattern } of scanner.globs) {
       if (!pattern.startsWith("{")) emitDependency("glob", [base, inventoryPattern(pattern)], "css");
 
-      let directory = base;
+      const stop = base === projectDir || base.startsWith(projectDir + path.sep) ? projectDir : path.parse(base).root;
 
-      while (true) {
-        emitDependency("dependency", path.join(directory, ".gitignore"), "css");
-        if (directory === path.dirname(assetsDir)) break;
-        const parent = path.dirname(directory);
-        if (parent === directory) break;
-        directory = parent;
+      for (let directory = base; ; directory = path.dirname(directory)) {
+        emitDependency("probe", path.join(directory, ".gitignore"), "css");
+        if (directory === stop) break;
       }
     }
 
@@ -290,18 +333,14 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   };
 
   const buildDirectSvgRoot = async (sourceDir, outputPrefix) => {
-    const files = await regularFiles(sourceDir);
+    const files = (await regularFiles(sourceDir)).filter(
+      (file) => path.extname(file).toLowerCase() === ".svg" && path.relative(sourceDir, file).split(path.sep)[0] !== "sprites"
+    );
 
-    await Promise.all(files.map(async (file) => {
-      if (path.extname(file).toLowerCase() !== ".svg") return;
-      if (hiddenPath(path.relative(sourceDir, file))) return;
-
-      const relative = path.relative(sourceDir, file);
-
-      if (relative.split(path.sep).includes("sprites")) return;
-
-      await emit("svg", `assets/svg/${outputPrefix}${relative.split(path.sep).join("/")}`, await optimizeSvg(file));
-    }));
+    await mapLimit(files, async (file) => {
+      const relative = path.relative(sourceDir, file).split(path.sep).join("/");
+      await emit("svg", `assets/svg/${outputPrefix}${relative}`, await optimizeSvg(file));
+    });
   };
 
   const createSpriter = async (mode, spriteName, namespaceIDs) => {
@@ -444,10 +483,18 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     const specs = [];
 
     for (const entry of await readdir(spritesDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      if (entry.name.startsWith(".")) continue;
+
+      if (!entry.isDirectory()) {
+        if (path.extname(entry.name).toLowerCase() === ".svg") {
+          throw new Error(`SVG sprite sources belong in a subdirectory of ${spritesDir}: ${entry.name}`);
+        }
+
+        continue;
+      }
 
       specs.push({
-        mode: entry.name === "app" ? "stack" : "symbol",
+        mode: stackSprites.includes(`${entry.name}.svg`) ? "stack" : "symbol",
         sourceDir: path.join(spritesDir, entry.name),
         spriteName: `${entry.name}.svg`
       });
@@ -510,9 +557,6 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     return groups.values();
   };
 
-  const jsEntries = entries("PHOENIX_ASSET_PIPELINE_JS");
-  const cssEntries = entries("PHOENIX_ASSET_PIPELINE_CSS");
-
   if (jsEntries.length > 0) await buildJs(jsEntries);
   await Promise.all(cssEntries.map(buildCss));
 
@@ -523,26 +567,25 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       await emitSprite(group);
     }
   }
+
+  await Bun.write(path.join(outputDir, "response.json"), JSON.stringify(response));
   """
 
-  @css_ext ".css"
   @entry_exts ~w(.cjs .cts .js .jsx .mjs .mts .ts .tsx)
   @asset_mode if(Config.precompiled_manifest?(),
                 do: :prod,
                 else: :dev
               )
   @install_args if(@asset_mode == :prod, do: ~w(install --frozen-lockfile), else: ~w(install))
-  @minify_js if(@asset_mode == :prod, do: "1", else: "0")
+  @minify_js @asset_mode == :prod
   @node_env if(@asset_mode == :prod, do: "production", else: "development")
-  @install_lock {__MODULE__, :install}
-  @install_cache_file "bun_install.term"
   @output_cache_file "bun_assets.term"
   @path_delimiter if(match?({:win32, _}, :os.type()), do: ";", else: ":")
   @script_fingerprint :crypto.hash(:sha256, @script)
 
   def build(assets_dir, sprite_sources, asset_terms, colocated_terms) do
     js_entries = asset_entries(assets_dir, "js", @entry_exts)
-    css_entries = asset_entries(assets_dir, "css", [@css_ext])
+    css_entries = asset_entries(assets_dir, "css", [".css"])
 
     svg_signature =
       for {_, "svg/" <> _ = path, _} = term <- asset_terms, String.downcase(Path.extname(path)) == ".svg", do: term
@@ -609,6 +652,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     |> Enum.reduce({[], []}, fn
       {{:directory, path}, _}, {dirs, files} -> {[watch_dir(path) | dirs], files}
       {{:glob, path, _}, _}, {dirs, files} -> {[watch_dir(path) | dirs], files}
+      {{:probe, path}, _}, {dirs, files} -> {dirs, [path | files]}
       {path, _}, {dirs, files} -> {dirs, [path | files]}
     end)
   end
@@ -617,7 +661,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     assets_dir
     |> Path.join(dir)
     |> entries(exts)
-    |> Enum.map(&Files.relative_path(&1, assets_dir))
+    |> Enum.map(&Path.relative_to(&1, assets_dir))
   end
 
   defp build_fingerprint(bun_fingerprint, assets_dir) do
@@ -639,6 +683,8 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     js_before = Map.new(select(build_js?, js_dependencies, []), fn {path, _} -> {path, source_digest(path, nil)} end)
     css_before = Map.new(select(build_css?, css_dependencies, []), fn {path, _} -> {path, source_digest(path, nil)} end)
 
+    started = System.os_time(:second)
+
     assets =
       run(
         assets_dir,
@@ -655,8 +701,8 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
         css_dependencies: dependency_signature(assets.css_dependencies)
     }
 
-    retry_js? = build_js? and not dependencies_unchanged?(assets.js_dependencies, js_before)
-    retry_css? = build_css? and not dependencies_unchanged?(assets.css_dependencies, css_before)
+    retry_js? = build_js? and not dependencies_unchanged?(assets.js_dependencies, js_before, started)
+    retry_css? = build_css? and not dependencies_unchanged?(assets.css_dependencies, css_before, started)
 
     if retry_js? or retry_css? do
       retry =
@@ -710,8 +756,13 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
   defp dependencies_current?(_, _), do: false
 
-  defp dependencies_unchanged?(dependencies, before) do
-    Enum.all?(dependencies, fn {path, digest} -> Map.fetch(before, path) == {:ok, digest} end)
+  defp dependencies_unchanged?(dependencies, before, started) do
+    Enum.all?(dependencies, fn {path, digest} ->
+      case Map.fetch(before, path) do
+        {:ok, before_digest} -> before_digest == digest
+        :error -> not modified_since?(path, started)
+      end
+    end)
   end
 
   defp dependency_group!("css"), do: :css_dependencies
@@ -733,16 +784,18 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     Enum.map(dependencies, fn {path, _} -> {path, source_digest(path, source_digests)} end)
   end
 
-  defp dependency_source!("dependency", path), do: path |> Base.decode64!() |> dependency_path!()
-  defp dependency_source!("directory", path), do: {:directory, dependency_source!("dependency", path)}
+  defp dependency_source!("dependency", path) when is_binary(path), do: dependency_path!(path)
+  defp dependency_source!("directory", path) when is_binary(path), do: {:directory, dependency_path!(path)}
+  defp dependency_source!("probe", path) when is_binary(path), do: {:probe, dependency_path!(path)}
 
-  defp dependency_source!("glob", path) do
-    [base, pattern] = path |> Base.decode64!() |> JSON.decode!()
+  defp dependency_source!("glob", [base, pattern]) when is_binary(base) and is_binary(pattern) do
     {:glob, dependency_path!(base), pattern}
   end
 
+  defp dependency_source!(_, _), do: raise("bun asset build returned an invalid dependency")
+
   defp dependency_sources_signature(assets_dir) do
-    for file <- ["package.json", "bun.lock"], do: {file, Digest.file(Path.join(assets_dir, file))}
+    for file <- ["bun.lock", "bunfig.toml", "package.json"], do: {file, Digest.file(Path.join(assets_dir, file))}
   end
 
   defp directory_entry(path, file) do
@@ -751,21 +804,15 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   end
 
   defp ensure_dependencies(assets_dir, bun_fingerprint) do
-    :global.trans(
-      {{@install_lock, assets_dir}, self()},
-      fn ->
-        signature = install_signature(assets_dir, bun_fingerprint)
+    Cache.with_lock("bun install #{assets_dir}", fn ->
+      signature = install_signature(assets_dir, bun_fingerprint)
 
-        if File.dir?(Path.join(assets_dir, "node_modules")) and
-             Cache.read_term(install_cache_path(), nil, &{:ok, &1}) == {assets_dir, signature} do
-          signature
-        else
-          install_dependencies!(assets_dir, bun_fingerprint, signature)
-        end
-      end,
-      [node()],
-      :infinity
-    )
+      if Cache.read_term(install_cache_path(assets_dir), nil, &{:ok, &1}) == signature do
+        signature
+      else
+        install_dependencies!(assets_dir, bun_fingerprint, signature)
+      end
+    end)
   end
 
   defp ensure_package_json!(assets_dir) do
@@ -814,8 +861,8 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       Path.extname(path) in exts
   end
 
-  defp install_cache_path do
-    Path.join(Config.manifest_cache_dir(), @install_cache_file)
+  defp install_cache_path(assets_dir) do
+    Path.join([assets_dir, "node_modules", ".phoenix_asset_pipeline.term"])
   end
 
   defp install_dependencies!(assets_dir, bun_fingerprint, signature, attempts \\ 3)
@@ -825,15 +872,12 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   end
 
   defp install_dependencies!(assets_dir, bun_fingerprint, signature, attempts) do
-    # An interrupted install can recreate node_modules, so the old marker must not survive it.
-    _ = File.rm(install_cache_path())
+    _ = File.rm(install_cache_path(assets_dir))
     :ok = run_bun_install(assets_dir)
     installed = install_signature(assets_dir, bun_fingerprint)
 
-    # Inputs changed during the install, including a bun.lock that Bun rewrote, are installed again
-    # before any build uses them; a rewrite settles on the next pass.
     if installed == signature do
-      Cache.write_term!(install_cache_path(), {assets_dir, installed})
+      Cache.write_term!(install_cache_path(assets_dir), installed)
       installed
     else
       install_dependencies!(assets_dir, bun_fingerprint, installed, attempts - 1)
@@ -841,8 +885,29 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   end
 
   defp install_signature(assets_dir, bun_fingerprint) do
-    [{:bun, bun_fingerprint} | dependency_sources_signature(assets_dir)]
+    [{:bun, bun_fingerprint}, {:args, @install_args} | dependency_sources_signature(assets_dir)]
   end
+
+  defp modified_since?({:directory, path}, started), do: modified_since?({:probe, path}, started)
+
+  defp modified_since?({:glob, path, pattern}, started) do
+    path
+    |> Path.join(pattern)
+    |> Path.wildcard(match_dot: true)
+    |> Enum.flat_map(&[&1, Path.dirname(&1)])
+    |> then(&[path | &1])
+    |> Enum.uniq()
+    |> Enum.any?(&modified_since?({:probe, &1}, started))
+  end
+
+  defp modified_since?({:probe, path}, started) do
+    case File.stat(path, time: :posix) do
+      {:ok, %{ctime: ctime, mtime: mtime}} -> max(ctime, mtime) >= started
+      {:error, _} -> false
+    end
+  end
+
+  defp modified_since?(path, started), do: not File.exists?(path) or modified_since?({:probe, path}, started)
 
   defp node_path do
     [
@@ -868,25 +933,25 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   defp output_group!("svg"), do: :svg
   defp output_group!(_), do: raise("bun asset build returned an invalid output group")
 
-  defp output_path!(output_dir, output_name) do
-    if output_name =~ ~r/\A(?:0|[1-9]\d*)\z/,
-      do: Path.join(output_dir, output_name),
-      else: raise("bun asset build returned an invalid output reference")
+  defp output_path!(output_dir, output) when is_integer(output) and output >= 0 do
+    Path.join(output_dir, Integer.to_string(output))
   end
 
-  defp parse_output(output, output_dir) do
-    assets =
-      output
-      |> :binary.split("\n", [:global, :trim])
-      |> Enum.reduce(%{css: [], css_dependencies: [], js: [], js_dependencies: [], svg: []}, fn line, assets ->
-        case :binary.split(line, "\t", [:global]) do
-          [kind, source, group] when kind in ["dependency", "directory", "glob"] ->
-            Map.update!(assets, dependency_group!(group), &[dependency_source!(kind, source) | &1])
+  defp output_path!(_, _), do: raise("bun asset build returned an invalid output reference")
 
-          [group, path, output_name] ->
-            asset = {Base.decode64!(path), File.read!(output_path!(output_dir, output_name))}
-            Map.update!(assets, output_group!(group), &[asset | &1])
-        end
+  defp parse_output(output_dir) do
+    assets =
+      output_dir
+      |> Path.join("response.json")
+      |> File.read!()
+      |> JSON.decode!()
+      |> Enum.reduce(%{css: [], css_dependencies: [], js: [], js_dependencies: [], svg: []}, fn
+        %{"group" => group, "kind" => kind, "source" => source}, assets ->
+          Map.update!(assets, dependency_group!(group), &[dependency_source!(kind, source) | &1])
+
+        %{"group" => group, "output" => output, "path" => path}, assets when is_binary(path) ->
+          asset = {path, File.read!(output_path!(output_dir, output))}
+          Map.update!(assets, output_group!(group), &[asset | &1])
       end)
 
     %{
@@ -903,25 +968,39 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
 
   defp run(assets_dir, js_entries, css_entries, sprite_sources, svg?, js_drop) do
     output_dir = output_dir()
+    {sprite_groups, sprite_entries} = Enum.split_with(sprite_sources, &(elem(&1, 0) == :svg_sprite_group))
 
-    env = [
-      {"NODE_ENV", @node_env},
-      {"NODE_PATH", node_path()},
-      {"PHOENIX_ASSET_PIPELINE_CSS", Enum.join(css_entries, "\n")},
-      {"PHOENIX_ASSET_PIPELINE_JS", Enum.join(js_entries, "\n")},
-      {"PHOENIX_ASSET_PIPELINE_JS_DROP", Enum.join(js_drop, "\n")},
-      {"PHOENIX_ASSET_PIPELINE_MINIFY_JS", @minify_js},
-      {"PHOENIX_ASSET_PIPELINE_OUTPUT_DIR", output_dir},
-      {"PHOENIX_ASSET_PIPELINE_SVG", if(svg?, do: "1", else: "0")},
-      {"PHOENIX_ASSET_PIPELINE_SVG_SPRITE_SOURCES", sprite_source_env(sprite_sources)}
-    ]
+    request = %{
+      css: css_entries,
+      js: js_entries,
+      jsDrop: js_drop,
+      minifyJs: @minify_js,
+      projectDir: Config.project_dir(),
+      spriteGroups:
+        Enum.map(sprite_groups, fn {_, sprite, mode, namespace_ids?, metadata_path, _} ->
+          %{metadataFile: metadata_path, mode: mode, namespaceIDs: namespace_ids?, sprite: sprite}
+        end),
+      spriteSources:
+        Enum.map(sprite_entries, fn {_, sprite, path, name, _, _} -> %{name: name, source: path, sprite: sprite} end),
+      stackSprites: Sprites.stack_sprites(),
+      svg: svg?
+    }
 
     File.mkdir!(output_dir)
 
     try do
-      case BunRuntime.run_ready(["--eval", @script], cd: assets_dir, env: env) do
-        {output, 0} -> parse_output(output, output_dir)
-        {output, status} -> raise "bun asset build exited with #{status}\n#{output}"
+      File.write!(Path.join(output_dir, "request.json"), JSON.encode!(request))
+
+      case BunRuntime.run_ready(["--eval", @script],
+             cd: assets_dir,
+             env: [{"NODE_ENV", @node_env}, {"NODE_PATH", node_path()}, {"PHOENIX_ASSET_PIPELINE_OUTPUT_DIR", output_dir}]
+           ) do
+        {output, 0} ->
+          IO.write(output)
+          parse_output(output_dir)
+
+        {output, status} ->
+          raise "bun asset build exited with #{status}\n#{output}"
       end
     after
       File.rm_rf!(output_dir)
@@ -974,6 +1053,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
     |> Digest.term()
   end
 
+  defp source_digest({:probe, path}, _), do: Digest.file(path)
   defp source_digest(path, nil), do: Digest.file(path)
 
   defp source_digest(path, {assets_dir, asset_digests, build_path, colocated_digests}) do
@@ -990,7 +1070,7 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
   end
 
   defp source_digest(path, root, digests) do
-    relative = Files.relative_path(path, root)
+    relative = Path.relative_to(path, root)
     if Path.type(relative) == :relative, do: Map.fetch(digests, relative), else: :error
   end
 
@@ -1001,20 +1081,6 @@ defmodule PhoenixAssetPipeline.Assets.Bun do
       Config.build_path(),
       Map.new(colocated_terms, &{elem(&1, 1), elem(&1, 2)})
     }
-  end
-
-  defp sprite_source_env(sprite_sources) do
-    Enum.map_join(
-      sprite_sources,
-      "\n",
-      fn
-        {:svg_sprite_group, sprite, mode, namespace_ids?, metadata_path, _} ->
-          Enum.join(["g", sprite, mode, if(namespace_ids?, do: "1", else: "0"), metadata_path], "\t")
-
-        {:svg_sprite_source, sprite, path, name, _, _} ->
-          Enum.join(["s", sprite, path, name], "\t")
-      end
-    )
   end
 
   defp svg_cache_key([], _, []), do: nil

@@ -61,6 +61,7 @@ defmodule PhoenixAssetPipeline.Assets do
 
     watch_dirs =
       files
+      |> Enum.reject(&(Path.basename(&1) == ".gitignore" and not String.starts_with?(&1, project_dir <> "/")))
       |> Enum.map(&Path.dirname/1)
       |> Kernel.++(dirs)
       |> Enum.uniq()
@@ -72,7 +73,7 @@ defmodule PhoenixAssetPipeline.Assets do
 
   defp asset_source_terms(assets_dir) do
     for {path, digest} <- Files.digests(assets_dir, @digest_cache_file),
-        relative = Files.relative_path(path, assets_dir),
+        relative = Path.relative_to(path, assets_dir),
         relative not in ["bun.lock", "package.json"],
         do: {:asset, relative, digest}
   end
@@ -81,7 +82,7 @@ defmodule PhoenixAssetPipeline.Assets do
     build_path = Config.build_path()
 
     for path <- Files.regular_files(Config.colocated_dir()) do
-      {:colocated, Files.relative_path(path, build_path), Digest.file(path)}
+      {:colocated, Path.relative_to(path, build_path), Digest.file(path)}
     end
   end
 
